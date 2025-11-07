@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	MTU         = 1500
+	MTU         = 1400  // Reduced to account for encryption overhead (GCM adds ~28 bytes)
 	TUN_DEVICE  = "tun0"
 	VPN_NETWORK = "10.8.0.0/24"
 	SERVER_IP   = "10.8.0.1"
