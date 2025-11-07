@@ -12,6 +12,8 @@ import (
 	"net"
 	"os"
 	"os/exec"
+
+	"github.com/songgao/water"
 )
 
 const (
@@ -25,7 +27,7 @@ type VPNServer struct {
 	listenAddr string
 	encryption bool
 	key        []byte
-	tunFile    *os.File
+	tunIface   *water.Interface
 }
 
 func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
@@ -37,27 +39,30 @@ func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
 }
 
 func (s *VPNServer) setupTUN() error {
-	// Load TUN module
-	exec.Command("modprobe", "tun").Run()
-
-	// Delete existing TUN device if it exists
-	exec.Command("ip", "link", "delete", TUN_DEVICE).Run()
-
-	// Create TUN device
-	cmd := exec.Command("ip", "tuntap", "add", "mode", "tun", "dev", TUN_DEVICE)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to create TUN device: %v - %s", err, string(output))
+	// Create TUN interface using water library
+	config := water.Config{
+		DeviceType: water.TUN,
+		PlatformSpecificParams: water.PlatformSpecificParams{
+			Name: TUN_DEVICE,
+		},
 	}
 
+	iface, err := water.New(config)
+	if err != nil {
+		return fmt.Errorf("failed to create TUN device: %v", err)
+	}
+	s.tunIface = iface
+
+	log.Printf("Created TUN device: %s", iface.Name())
+
 	// Assign IP address
-	cmd = exec.Command("ip", "addr", "add", SERVER_IP+"/24", "dev", TUN_DEVICE)
+	cmd := exec.Command("ip", "addr", "add", SERVER_IP+"/24", "dev", iface.Name())
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to assign IP: %v", err)
 	}
 
 	// Bring interface up
-	cmd = exec.Command("ip", "link", "set", "dev", TUN_DEVICE, "up")
+	cmd = exec.Command("ip", "link", "set", "dev", iface.Name(), "up")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to bring interface up: %v", err)
 	}
@@ -68,14 +73,7 @@ func (s *VPNServer) setupTUN() error {
 		return fmt.Errorf("failed to enable IP forwarding: %v", err)
 	}
 
-	// Open TUN device
-	tunFile, err := os.OpenFile("/dev/net/tun", os.O_RDWR, 0)
-	if err != nil {
-		return fmt.Errorf("failed to open TUN device: %v", err)
-	}
-	s.tunFile = tunFile
-
-	log.Printf("TUN device %s configured with IP %s", TUN_DEVICE, SERVER_IP)
+	log.Printf("TUN device %s configured with IP %s", iface.Name(), SERVER_IP)
 	return nil
 }
 
@@ -152,7 +150,7 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 	go func() {
 		buffer := make([]byte, MTU)
 		for {
-			n, err := s.tunFile.Read(buffer)
+			n, err := s.tunIface.Read(buffer)
 			if err != nil {
 				log.Printf("TUN read error: %v", err)
 				done <- true
@@ -224,7 +222,7 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 				packet = buffer
 			}
 
-			if _, err := s.tunFile.Write(packet); err != nil {
+			if _, err := s.tunIface.Write(packet); err != nil {
 				log.Printf("TUN write error: %v", err)
 				done <- true
 				return

@@ -13,7 +13,10 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"syscall"
+
+	"github.com/songgao/water"
 )
 
 const (
@@ -27,10 +30,11 @@ type VPNClient struct {
 	serverAddr string
 	encryption bool
 	key        []byte
-	tunFile    *os.File
+	tunIface   *water.Interface
 	conn       net.Conn
 	enabled    bool
 	originalGW string
+	tunName    string
 }
 
 func NewVPNClient(serverAddr string, encryption bool, key []byte) *VPNClient {
@@ -43,48 +47,65 @@ func NewVPNClient(serverAddr string, encryption bool, key []byte) *VPNClient {
 }
 
 func (c *VPNClient) setupTUN() error {
-	// Load TUN module
-	exec.Command("modprobe", "tun").Run()
+	// Create TUN interface using water library (cross-platform)
+	config := water.Config{
+		DeviceType: water.TUN,
+	}
 
-	// Delete existing TUN device if it exists
-	exec.Command("ip", "link", "delete", TUN_DEVICE).Run()
+	// On Linux, we can specify the device name
+	if runtime.GOOS == "linux" {
+		config.Name = TUN_DEVICE
+	}
 
-	// Create TUN device
-	cmd := exec.Command("ip", "tuntap", "add", "mode", "tun", "dev", TUN_DEVICE)
-	if err := cmd.Run(); err != nil {
+	iface, err := water.New(config)
+	if err != nil {
 		return fmt.Errorf("failed to create TUN device: %v", err)
 	}
+	c.tunIface = iface
+	c.tunName = iface.Name()
 
-	// Assign IP address
-	cmd = exec.Command("ip", "addr", "add", CLIENT_IP+"/24", "dev", TUN_DEVICE)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to assign IP: %v", err)
+	log.Printf("Created TUN device: %s", c.tunName)
+
+	// Configure IP address based on OS
+	if runtime.GOOS == "darwin" {
+		// macOS uses ifconfig
+		cmd := exec.Command("ifconfig", c.tunName, CLIENT_IP, SERVER_IP, "up")
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to configure %s: %v", c.tunName, err)
+		}
+	} else {
+		// Linux uses ip command
+		cmd := exec.Command("ip", "addr", "add", CLIENT_IP+"/24", "dev", c.tunName)
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to assign IP: %v", err)
+		}
+
+		cmd = exec.Command("ip", "link", "set", "dev", c.tunName, "up")
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to bring interface up: %v", err)
+		}
 	}
 
-	// Bring interface up
-	cmd = exec.Command("ip", "link", "set", "dev", TUN_DEVICE, "up")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to bring interface up: %v", err)
-	}
-
-	// Open TUN device
-	tunFile, err := os.OpenFile("/dev/net/tun", os.O_RDWR, 0)
-	if err != nil {
-		return fmt.Errorf("failed to open TUN device: %v", err)
-	}
-	c.tunFile = tunFile
-
-	log.Printf("TUN device %s configured with IP %s", TUN_DEVICE, CLIENT_IP)
+	log.Printf("TUN device %s configured with IP %s", c.tunName, CLIENT_IP)
 	return nil
 }
 
 func (c *VPNClient) getDefaultGateway() (string, error) {
-	cmd := exec.Command("sh", "-c", "ip route | grep default | awk '{print $3}'")
+	var cmd *exec.Cmd
+	if runtime.GOOS == "darwin" {
+		cmd = exec.Command("sh", "-c", "route -n get default | grep gateway | awk '{print $2}'")
+	} else {
+		cmd = exec.Command("sh", "-c", "ip route | grep default | awk '{print $3}'")
+	}
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}
-	return string(output[:len(output)-1]), nil // Remove trailing newline
+	result := string(output)
+	if len(result) > 0 && result[len(result)-1] == '\n' {
+		result = result[:len(result)-1]
+	}
+	return result, nil
 }
 
 func (c *VPNClient) routeAllTraffic() error {
@@ -96,23 +117,43 @@ func (c *VPNClient) routeAllTraffic() error {
 	c.originalGW = gw
 	log.Printf("Original gateway: %s", c.originalGW)
 
-	// Add route to VPN server through original gateway
 	serverHost, _, _ := net.SplitHostPort(c.serverAddr)
-	cmd := exec.Command("ip", "route", "add", serverHost, "via", c.originalGW)
-	if err := cmd.Run(); err != nil {
-		log.Printf("Warning: failed to add server route: %v", err)
-	}
 
-	// Delete default route
-	cmd = exec.Command("ip", "route", "del", "default")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to delete default route: %v", err)
-	}
+	if runtime.GOOS == "darwin" {
+		// macOS routing
+		// Add route to VPN server through original gateway
+		cmd := exec.Command("route", "-n", "add", "-host", serverHost, c.originalGW)
+		if err := cmd.Run(); err != nil {
+			log.Printf("Warning: failed to add server route: %v", err)
+		}
 
-	// Add default route through VPN
-	cmd = exec.Command("ip", "route", "add", "default", "via", SERVER_IP, "dev", TUN_DEVICE)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to add VPN route: %v", err)
+		// Delete default route
+		cmd = exec.Command("route", "-n", "delete", "default")
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to delete default route: %v", err)
+		}
+
+		// Add default route through VPN
+		cmd = exec.Command("route", "-n", "add", "-net", "default", SERVER_IP)
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to add VPN route: %v", err)
+		}
+	} else {
+		// Linux routing
+		cmd := exec.Command("ip", "route", "add", serverHost, "via", c.originalGW)
+		if err := cmd.Run(); err != nil {
+			log.Printf("Warning: failed to add server route: %v", err)
+		}
+
+		cmd = exec.Command("ip", "route", "del", "default")
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to delete default route: %v", err)
+		}
+
+		cmd = exec.Command("ip", "route", "add", "default", "via", SERVER_IP, "dev", c.tunName)
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to add VPN route: %v", err)
+		}
 	}
 
 	log.Println("All traffic now routed through VPN")
@@ -120,38 +161,59 @@ func (c *VPNClient) routeAllTraffic() error {
 }
 
 func (c *VPNClient) restoreRouting() error {
-	// Delete VPN default route
-	cmd := exec.Command("ip", "route", "del", "default", "dev", TUN_DEVICE)
-	if err := cmd.Run(); err != nil {
-		log.Printf("Warning: failed to delete VPN route: %v", err)
-	}
-
-	// Restore original default route
-	if c.originalGW != "" {
-		cmd = exec.Command("ip", "route", "add", "default", "via", c.originalGW)
+	if runtime.GOOS == "darwin" {
+		// macOS routing restoration
+		cmd := exec.Command("route", "-n", "delete", "default")
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to restore default route: %v", err)
+			log.Printf("Warning: failed to delete VPN route: %v", err)
 		}
-		log.Println("Routing restored to original gateway")
+
+		if c.originalGW != "" {
+			cmd = exec.Command("route", "-n", "add", "-net", "default", c.originalGW)
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("failed to restore default route: %v", err)
+			}
+			log.Println("Routing restored to original gateway")
+		}
+	} else {
+		// Linux routing restoration
+		cmd := exec.Command("ip", "route", "del", "default", "dev", c.tunName)
+		if err := cmd.Run(); err != nil {
+			log.Printf("Warning: failed to delete VPN route: %v", err)
+		}
+
+		if c.originalGW != "" {
+			cmd = exec.Command("ip", "route", "add", "default", "via", c.originalGW)
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("failed to restore default route: %v", err)
+			}
+			log.Println("Routing restored to original gateway")
+		}
 	}
 
 	return nil
 }
 
 func (c *VPNClient) cleanupTUN() error {
-	if c.tunFile != nil {
-		c.tunFile.Close()
+	if c.tunIface != nil {
+		c.tunIface.Close()
 	}
 
-	cmd := exec.Command("ip", "link", "set", "dev", TUN_DEVICE, "down")
-	cmd.Run()
+	if runtime.GOOS == "darwin" {
+		// macOS cleanup - utun devices are automatically removed when closed
+		log.Printf("TUN device %s closed", c.tunName)
+	} else {
+		// Linux cleanup
+		cmd := exec.Command("ip", "link", "set", "dev", c.tunName, "down")
+		cmd.Run()
 
-	cmd = exec.Command("ip", "tuntap", "del", "mode", "tun", "dev", TUN_DEVICE)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to delete TUN device: %v", err)
+		cmd = exec.Command("ip", "tuntap", "del", "mode", "tun", "dev", c.tunName)
+		if err := cmd.Run(); err != nil {
+			log.Printf("Warning: failed to delete TUN device: %v", err)
+		}
+		log.Printf("TUN device %s removed", c.tunName)
 	}
 
-	log.Printf("TUN device %s removed", TUN_DEVICE)
 	return nil
 }
 
@@ -245,7 +307,7 @@ func (c *VPNClient) Connect() error {
 	go func() {
 		buffer := make([]byte, MTU)
 		for c.enabled {
-			n, err := c.tunFile.Read(buffer)
+			n, err := c.tunIface.Read(buffer)
 			if err != nil {
 				log.Printf("TUN read error: %v", err)
 				done <- true
@@ -306,7 +368,7 @@ func (c *VPNClient) Connect() error {
 				continue
 			}
 
-			if _, err := c.tunFile.Write(packet); err != nil {
+			if _, err := c.tunIface.Write(packet); err != nil {
 				log.Printf("TUN write error: %v", err)
 				done <- true
 				return
