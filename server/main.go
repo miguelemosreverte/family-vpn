@@ -37,6 +37,13 @@ func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
 	}
 }
 
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func (s *VPNServer) setupTUN() error {
 	// Create TUN interface using water library
 	config := water.Config{
@@ -216,17 +223,19 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 			var packet []byte
 			var err error
 			if clientWantsEncryption {
+				log.Printf("[SERVER IN] Received encrypted: %d bytes", len(buffer))
 				packet, err = s.decrypt(buffer)
 				if err != nil {
 					log.Printf("Decryption error: %v", err)
 					continue
 				}
+				log.Printf("[SERVER IN] After decrypt: %d bytes, first 4 bytes: %x", len(packet), packet[:minInt(4, len(packet))])
 			} else {
 				packet = buffer
 			}
 
 			if _, err := s.tunIface.Write(packet); err != nil {
-				log.Printf("TUN write error: %v", err)
+				log.Printf("TUN write error: %v (packet size: %d)", err, len(packet))
 				done <- true
 				return
 			}

@@ -46,6 +46,13 @@ func NewVPNClient(serverAddr string, encryption bool, key []byte) *VPNClient {
 	}
 }
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func (c *VPNClient) setupTUN() error {
 	// Create TUN interface using water library (cross-platform)
 	config := water.Config{
@@ -315,10 +322,20 @@ func (c *VPNClient) Connect() error {
 			}
 
 			packet := buffer[:n]
+
+			// DEBUG: Log packet details when encryption is on
+			if c.encryption {
+				log.Printf("[CLIENT OUT] Read from TUN: %d bytes, first 4 bytes: %x", n, packet[:min(4, len(packet))])
+			}
+
 			encrypted, err := c.encrypt(packet)
 			if err != nil {
 				log.Printf("Encryption error: %v", err)
 				continue
+			}
+
+			if c.encryption {
+				log.Printf("[CLIENT OUT] After encrypt: %d bytes", len(encrypted))
 			}
 
 			// Send packet length first, then packet
@@ -362,10 +379,18 @@ func (c *VPNClient) Connect() error {
 				return
 			}
 
+			if c.encryption {
+				log.Printf("[CLIENT IN] Received encrypted: %d bytes", len(buffer))
+			}
+
 			packet, err := c.decrypt(buffer)
 			if err != nil {
 				log.Printf("Decryption error: %v", err)
 				continue
+			}
+
+			if c.encryption {
+				log.Printf("[CLIENT IN] After decrypt: %d bytes, first 4 bytes: %x", len(packet), packet[:min(4, len(packet))])
 			}
 
 			if _, err := c.tunIface.Write(packet); err != nil {
