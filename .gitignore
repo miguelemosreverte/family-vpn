@@ -1,0 +1,20 @@
+# Binaries
+vpn-server
+vpn-client
+server/vpn-server
+client/vpn-client
+
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
