@@ -62,7 +62,7 @@ func (s *VPNServer) setupTUN() error {
 	}
 
 	// Open TUN device
-	tunFile, err := os.OpenFile("/dev/net/"+TUN_DEVICE, os.O_RDWR, 0)
+	tunFile, err := os.OpenFile("/dev/net/tun", os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Errorf("failed to open TUN device: %v", err)
 	}
