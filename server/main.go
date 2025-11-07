@@ -54,10 +54,14 @@ func (s *VPNServer) setupTUN() error {
 
 	log.Printf("Created TUN device: %s", iface.Name())
 
+	// Delete any existing IP (ignore errors)
+	exec.Command("ip", "addr", "flush", "dev", iface.Name()).Run()
+
 	// Assign IP address
 	cmd := exec.Command("ip", "addr", "add", SERVER_IP+"/24", "dev", iface.Name())
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to assign IP: %v", err)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to assign IP to %s: %v - %s", iface.Name(), err, string(output))
 	}
 
 	// Bring interface up
