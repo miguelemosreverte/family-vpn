@@ -4,9 +4,26 @@
 
 set -euo pipefail
 
+# Load .env if exists
+if [ -f .env ]; then
+    export $(cat .env | grep -v '^#' | xargs)
+fi
+
 SERVER_HOST="${VPN_SERVER_HOST:-95.217.238.72}"
-SSH_KEY="${VPN_SSH_KEY:-~/.ssh/id_ed25519_hetzner}"
 SERVER_DIR="vpn-first-steps"
+
+# Handle SSH key - if VPN_SSH_KEY is set and looks like base64, decode it
+if [ -n "${VPN_SSH_KEY:-}" ] && [ "${#VPN_SSH_KEY}" -gt 100 ]; then
+    # VPN_SSH_KEY is base64 encoded - decode to temp file
+    SSH_KEY_FILE="/tmp/vpn_deploy_key_$$"
+    echo "$VPN_SSH_KEY" | base64 -d > "$SSH_KEY_FILE"
+    chmod 600 "$SSH_KEY_FILE"
+    SSH_KEY="$SSH_KEY_FILE"
+    trap "rm -f $SSH_KEY_FILE" EXIT
+else
+    # Fall back to file path
+    SSH_KEY="${VPN_SSH_KEY:-~/.ssh/id_ed25519_hetzner}"
+fi
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
