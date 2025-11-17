@@ -340,6 +340,7 @@ start_vpn() {
     local encrypt_flag="$2"
 
     local log_file="$LOG_DIR/vpn-${mode}.log"
+    local profile_file="$LOG_DIR/vpn-${mode}-cpu.prof"
     : >"$log_file"
 
     local encrypt_arg=""
@@ -347,7 +348,8 @@ start_vpn() {
         encrypt_arg="-encrypt"
     fi
 
-    echo "$SUDO_PASS" | sudo -S "$VPN_CLIENT" -server "$SERVER_ADDR" $encrypt_arg >"$log_file" 2>&1 &
+    # Enable CPU profiling for VPN modes (not for "off" mode)
+    echo "$SUDO_PASS" | sudo -S "$VPN_CLIENT" -server "$SERVER_ADDR" $encrypt_arg -cpuprofile="$profile_file" >"$log_file" 2>&1 &
     vpn_wrapper_pid=$!
     sleep 1
     vpn_child_pid=$(pgrep -P "$vpn_wrapper_pid" -n 2>/dev/null || true)
@@ -358,7 +360,7 @@ start_vpn() {
         return 1
     fi
 
-    echo -e "${GREEN}✓ VPN connected${NC}"
+    echo -e "${GREEN}✓ VPN connected (profiling to: $profile_file)${NC}"
     return 0
 }
 
@@ -516,4 +518,30 @@ test_vpn_encrypted
 print_summary
 
 exit_code=$?
+
+# Show profiling information
+echo -e "\n${BLUE}╔════════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║                  CPU PROFILING RESULTS                         ║${NC}"
+echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "${CYAN}Profile files saved:${NC}"
+if [[ -f "$LOG_DIR/vpn-plain-cpu.prof" ]]; then
+    echo -e "  ${GREEN}✓${NC} Plain VPN:     $LOG_DIR/vpn-plain-cpu.prof"
+fi
+if [[ -f "$LOG_DIR/vpn-encrypted-cpu.prof" ]]; then
+    echo -e "  ${GREEN}✓${NC} Encrypted VPN: $LOG_DIR/vpn-encrypted-cpu.prof"
+fi
+
+echo ""
+echo -e "${CYAN}Analyze profiles with:${NC}"
+echo -e "  ${YELLOW}# Top functions (sorted by CPU time):${NC}"
+echo "  go tool pprof -top $LOG_DIR/vpn-plain-cpu.prof"
+echo ""
+echo -e "  ${YELLOW}# Interactive web UI:${NC}"
+echo "  go tool pprof -http=:8080 $LOG_DIR/vpn-plain-cpu.prof"
+echo ""
+echo -e "  ${YELLOW}# Compare plain vs encrypted:${NC}"
+echo "  go tool pprof -base=$LOG_DIR/vpn-plain-cpu.prof $LOG_DIR/vpn-encrypted-cpu.prof"
+echo ""
+
 exit $exit_code

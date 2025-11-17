@@ -190,12 +190,7 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 				done <- true
 				return
 			}
-			// Flush after each packet to avoid delays
-			if err := writer.Flush(); err != nil {
-				log.Printf("Failed to flush: %v", err)
-				done <- true
-				return
-			}
+			// Note: No flush here - let bufio batch multiple packets for efficiency
 		}
 	}()
 
