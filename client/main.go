@@ -335,6 +335,8 @@ func (c *VPNClient) Connect() error {
 		// Diagnostics
 		var packetsSent, flushCount, totalBytesSent int64
 		var lastReport = time.Now()
+		// Timing breakdown (in microseconds)
+		var timeTunRead, timeEncrypt, timeMutexWait, timeNetWrite, timeFlush int64
 
 		// Background flusher: aggressive flushing for fast TCP ramp-up
 		// Flush immediately when buffer ≥ 4KB, OR every 1ms for smaller amounts
@@ -366,14 +368,29 @@ func (c *VPNClient) Connect() error {
 				if flushCount == 0 {
 					avgBatch = 0
 				}
-				log.Printf("[EGRESS] %.0f pkt/s, %.2f Mbps, %.1f pkt/flush, %d flushes", pps, mbps, avgBatch, flushCount)
+				// Calculate average time per operation in microseconds
+				var avgTunRead, avgEncrypt, avgMutex, avgNetWrite, avgFlush float64
+				if packetsSent > 0 {
+					avgTunRead = float64(timeTunRead) / float64(packetsSent)
+					avgEncrypt = float64(timeEncrypt) / float64(packetsSent)
+					avgMutex = float64(timeMutexWait) / float64(packetsSent)
+					avgNetWrite = float64(timeNetWrite) / float64(packetsSent)
+					avgFlush = float64(timeFlush) / float64(packetsSent)
+				}
+				log.Printf("[EGRESS] %.0f pkt/s, %.2f Mbps, %.1f pkt/flush", pps, mbps, avgBatch)
+				log.Printf("[TIMING] TUN:%.0fµs Encrypt:%.0fµs Mutex:%.0fµs NetWrite:%.0fµs Flush:%.0fµs",
+					avgTunRead, avgEncrypt, avgMutex, avgNetWrite, avgFlush)
 				packetsSent, totalBytesSent, flushCount = 0, 0, 0
+				timeTunRead, timeEncrypt, timeMutexWait, timeNetWrite, timeFlush = 0, 0, 0, 0, 0
 				lastReport = time.Now()
 			}
 		}()
 
 		for c.enabled {
+			// Measure TUN read
+			t0 := time.Now()
 			n, err := c.tunIface.Read(buffer)
+			timeTunRead += time.Since(t0).Microseconds()
 			if err != nil {
 				log.Printf("TUN read error: %v", err)
 				done <- true
@@ -382,7 +399,10 @@ func (c *VPNClient) Connect() error {
 
 			packet := buffer[:n]
 
+			// Measure encryption
+			t1 := time.Now()
 			encrypted, err := c.encrypt(packet)
+			timeEncrypt += time.Since(t1).Microseconds()
 			if err != nil {
 				log.Printf("Encryption error: %v", err)
 				continue
@@ -390,7 +410,14 @@ func (c *VPNClient) Connect() error {
 
 			// Send packet length first, then packet using buffered writer
 			binary.BigEndian.PutUint32(lengthBuf, uint32(len(encrypted)))
+
+			// Measure mutex wait time
+			t2 := time.Now()
 			writerMutex.Lock()
+			timeMutexWait += time.Since(t2).Microseconds()
+
+			// Measure network writes
+			t3 := time.Now()
 			if _, err := writer.Write(lengthBuf); err != nil {
 				writerMutex.Unlock()
 				log.Printf("Failed to send length: %v", err)
@@ -403,10 +430,14 @@ func (c *VPNClient) Connect() error {
 				done <- true
 				return
 			}
+			timeNetWrite += time.Since(t3).Microseconds()
+
 			// Flush immediately if buffer is getting full (≥4KB)
 			// This ensures fast TCP ramp-up without waiting for 1ms timer
 			if writer.Buffered() >= 4096 {
+				t4 := time.Now()
 				writer.Flush()
+				timeFlush += time.Since(t4).Microseconds()
 				flushCount++
 			}
 			writerMutex.Unlock()
