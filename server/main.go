@@ -167,7 +167,7 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 	go func() {
 		buffer := make([]byte, MTU)
 		lengthBuf := make([]byte, 4) // Reuse length buffer
-		writer := bufio.NewWriter(conn) // Buffered writer
+		writer := bufio.NewWriterSize(conn, 65536) // 64KB buffered writer for better batching
 		var writerMutex sync.Mutex // Protect writer from concurrent access
 
 		// Background flusher: flush every 1ms for low latency while allowing batching
@@ -223,9 +223,9 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 				done <- true
 				return
 			}
-			// Flush immediately if buffer is getting full (≥4KB)
+			// Flush immediately if buffer is getting full (≥32KB, half of 64KB buffer)
 			// This ensures fast TCP ramp-up without waiting for 1ms timer
-			if writer.Buffered() >= 4096 {
+			if writer.Buffered() >= 32768 {
 				writer.Flush()
 			}
 			writerMutex.Unlock()

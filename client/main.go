@@ -329,7 +329,7 @@ func (c *VPNClient) Connect() error {
 	go func() {
 		buffer := make([]byte, MTU)
 		lengthBuf := make([]byte, 4) // Reuse length buffer
-		writer := bufio.NewWriter(conn) // Buffered writer
+		writer := bufio.NewWriterSize(conn, 65536) // 64KB buffered writer for better batching
 		var writerMutex sync.Mutex // Protect writer from concurrent access
 
 		// Diagnostics
@@ -432,9 +432,9 @@ func (c *VPNClient) Connect() error {
 			}
 			timeNetWrite += time.Since(t3).Microseconds()
 
-			// Flush immediately if buffer is getting full (≥4KB)
+			// Flush immediately if buffer is getting full (≥32KB, half of 64KB buffer)
 			// This ensures fast TCP ramp-up without waiting for 1ms timer
-			if writer.Buffered() >= 4096 {
+			if writer.Buffered() >= 32768 {
 				t4 := time.Now()
 				writer.Flush()
 				timeFlush += time.Since(t4).Microseconds()
