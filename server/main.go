@@ -76,6 +76,15 @@ func (s *VPNServer) setupTUN() error {
 		return fmt.Errorf("failed to assign IP to %s: %v - %s", iface.Name(), err, string(output))
 	}
 
+	// Increase TX queue length to prevent packet drops during bursts
+	// Default 500 is too small for high-throughput VPN traffic
+	cmd = exec.Command("ip", "link", "set", "dev", iface.Name(), "txqueuelen", "10000")
+	if err := cmd.Run(); err != nil {
+		log.Printf("Warning: failed to set txqueuelen: %v", err)
+	} else {
+		log.Printf("TUN TX queue length set to 10000 (prevents burst packet drops)")
+	}
+
 	// Bring interface up
 	cmd = exec.Command("ip", "link", "set", "dev", iface.Name(), "up")
 	if err := cmd.Run(); err != nil {
