@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/songgao/water"
 )
@@ -35,6 +36,7 @@ type VPNClient struct {
 	enabled    bool
 	originalGW string
 	tunName    string
+	// forever    bool  // TODO: Add support for --forever flag in the future
 }
 
 func NewVPNClient(serverAddr string, encryption bool, key []byte) *VPNClient {
@@ -43,6 +45,7 @@ func NewVPNClient(serverAddr string, encryption bool, key []byte) *VPNClient {
 		encryption: encryption,
 		key:        key,
 		enabled:    false,
+		// forever:    forever,  // TODO: Add support for --forever flag in the future
 	}
 }
 
@@ -392,11 +395,25 @@ func (c *VPNClient) Connect() error {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
+	// Setup timeout for development safety (30 seconds)
+	log.Println("Development mode: VPN will automatically shut down after 30 seconds")
+	timeoutChan := time.After(30 * time.Second)
+
+	// TODO: Add --forever flag support to disable timeout for production use
+	// var timeoutChan <-chan time.Time
+	// if !c.forever {
+	// 	log.Println("Development mode: VPN will automatically shut down after 30 seconds")
+	// 	log.Println("Use --forever flag to run indefinitely")
+	// 	timeoutChan = time.After(30 * time.Second)
+	// }
+
 	select {
 	case <-done:
 		log.Println("Connection lost")
 	case <-sigChan:
 		log.Println("Shutting down...")
+	case <-timeoutChan:
+		log.Println("Safety timeout reached (30 seconds). Shutting down...")
 	}
 
 	return c.Disconnect()
@@ -424,6 +441,7 @@ func (c *VPNClient) Disconnect() error {
 func main() {
 	server := flag.String("server", "", "VPN server address (e.g., 95.217.238.72:8888)")
 	encrypt := flag.Bool("encrypt", false, "Enable encryption")
+	// forever := flag.Bool("forever", false, "Run indefinitely (default: 30s timeout for development safety)")  // TODO: Add in the future
 	flag.Parse()
 
 	if *server == "" {
