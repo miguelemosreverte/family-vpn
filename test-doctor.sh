@@ -18,7 +18,7 @@ CONNECT_TIMEOUT=${CONNECT_TIMEOUT:-20}
 SUDO_PASS="${SUDO_PASS:-osopanda}"
 LOG_DIR="${LOG_DIR:-/tmp}"
 PING_COUNT=${PING_COUNT:-3}  # 3 pings for quick average
-IPERF_DURATION=${IPERF_DURATION:-10}  # 10 seconds per iperf3 test
+IPERF_DURATION=${IPERF_DURATION:-20}  # 20 seconds per iperf3 test (allows TCP ramp-up)
 IPERF_PORT=${IPERF_PORT:-5201}  # iperf3 default port
 
 RED='\033[0;31m'

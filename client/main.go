@@ -462,9 +462,9 @@ func (c *VPNClient) Connect() error {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Setup timeout for development safety (30 seconds)
-	log.Println("Development mode: VPN will automatically shut down after 30 seconds")
-	timeoutChan := time.After(30 * time.Second)
+	// Setup timeout for development safety (60 seconds)
+	log.Println("Development mode: VPN will automatically shut down after 60 seconds")
+	timeoutChan := time.After(60 * time.Second)
 
 	// TODO: Add --forever flag support to disable timeout for production use
 	// var timeoutChan <-chan time.Time
@@ -480,7 +480,7 @@ func (c *VPNClient) Connect() error {
 	case <-sigChan:
 		log.Println("Shutting down...")
 	case <-timeoutChan:
-		log.Println("Safety timeout reached (30 seconds). Shutting down...")
+		log.Println("Safety timeout reached (60 seconds). Shutting down...")
 	}
 
 	return c.Disconnect()
