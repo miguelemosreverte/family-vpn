@@ -1,0 +1,50 @@
+--- a/client/main.go
++++ b/client/main.go
+@@ -17,6 +17,7 @@ import (
+ 	"runtime"
+ 	"syscall"
+ 	"time"
++	"sync/atomic"
+ 
+ 	"github.com/songgao/water"
+ )
+@@ -316,8 +317,16 @@ func (c *VPNClient) Connect() error {
+ 	done := make(chan bool)
+ 
++	// Metrics counters
++	var packetsReceived, packetsSent uint64
++	var bytesReceived, bytesSent uint64
++
+ 	// TUN -> Server (egress)
+ 	go func() {
++		// Log metrics every 5 seconds
++		ticker := time.NewTicker(5 * time.Second)
++		defer ticker.Stop()
++
+ 		buffer := make([]byte, MTU)
+ 		lengthBuf := make([]byte, 4)
+ 		writer := bufio.NewWriter(conn)
+@@ -327,6 +336,14 @@ func (c *VPNClient) Connect() error {
+ 				done <- true
+ 				return
+ 			}
++
++			select {
++			case <-ticker.C:
++				sent := atomic.LoadUint64(&packetsSent)
++				bytes := atomic.LoadUint64(&bytesSent)
++				log.Printf("Egress: %d packets, %d bytes (%.2f KB/s)", sent, bytes, float64(bytes)/5/1024)
++			default:
++			}
+ 
+ 			packet := buffer[:n]
+ 
+@@ -356,6 +373,8 @@ func (c *VPNClient) Connect() error {
+ 				done <- true
+ 				return
+ 			}
++			atomic.AddUint64(&packetsSent, 1)
++			atomic.AddUint64(&bytesSent, uint64(len(encrypted)))
+ 		}
+ 	}()
+ 

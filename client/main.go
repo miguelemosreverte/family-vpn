@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/pprof"
+	"sync"
 	"syscall"
 	"time"
 
@@ -320,6 +321,20 @@ func (c *VPNClient) Connect() error {
 		buffer := make([]byte, MTU)
 		lengthBuf := make([]byte, 4) // Reuse length buffer
 		writer := bufio.NewWriter(conn) // Buffered writer
+		var writerMutex sync.Mutex // Protect writer from concurrent access
+
+		// Background flusher: flush every 1ms for low latency while allowing batching
+		go func() {
+			ticker := time.NewTicker(1 * time.Millisecond)
+			defer ticker.Stop()
+			for c.enabled {
+				<-ticker.C
+				writerMutex.Lock()
+				writer.Flush()
+				writerMutex.Unlock()
+			}
+		}()
+
 		for c.enabled {
 			n, err := c.tunIface.Read(buffer)
 			if err != nil {
@@ -338,17 +353,21 @@ func (c *VPNClient) Connect() error {
 
 			// Send packet length first, then packet using buffered writer
 			binary.BigEndian.PutUint32(lengthBuf, uint32(len(encrypted)))
+			writerMutex.Lock()
 			if _, err := writer.Write(lengthBuf); err != nil {
+				writerMutex.Unlock()
 				log.Printf("Failed to send length: %v", err)
 				done <- true
 				return
 			}
 			if _, err := writer.Write(encrypted); err != nil {
+				writerMutex.Unlock()
 				log.Printf("Failed to send packet: %v", err)
 				done <- true
 				return
 			}
-			// Note: No flush here - let bufio batch multiple packets for efficiency
+			writerMutex.Unlock()
+			// Note: Periodic flusher handles flushing in background
 		}
 	}()
 

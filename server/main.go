@@ -14,6 +14,8 @@ import (
 	"os"
 	"os/exec"
 	"runtime/pprof"
+	"sync"
+	"time"
 
 	"github.com/songgao/water"
 )
@@ -158,6 +160,26 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 		buffer := make([]byte, MTU)
 		lengthBuf := make([]byte, 4) // Reuse length buffer
 		writer := bufio.NewWriter(conn) // Buffered writer
+		var writerMutex sync.Mutex // Protect writer from concurrent access
+
+		// Background flusher: flush every 1ms for low latency while allowing batching
+		flushDone := make(chan bool)
+		go func() {
+			ticker := time.NewTicker(1 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					writerMutex.Lock()
+					writer.Flush()
+					writerMutex.Unlock()
+				case <-flushDone:
+					return
+				}
+			}
+		}()
+		defer close(flushDone)
+
 		for {
 			n, err := s.tunIface.Read(buffer)
 			if err != nil {
@@ -180,17 +202,21 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 
 			// Send packet length first (4 bytes), then packet using buffered writer
 			binary.BigEndian.PutUint32(lengthBuf, uint32(len(encrypted)))
+			writerMutex.Lock()
 			if _, err := writer.Write(lengthBuf); err != nil {
+				writerMutex.Unlock()
 				log.Printf("Failed to send length: %v", err)
 				done <- true
 				return
 			}
 			if _, err := writer.Write(encrypted); err != nil {
+				writerMutex.Unlock()
 				log.Printf("Failed to send packet: %v", err)
 				done <- true
 				return
 			}
-			// Note: No flush here - let bufio batch multiple packets for efficiency
+			writerMutex.Unlock()
+			// Note: Periodic flusher handles flushing in background
 		}
 	}()
 
