@@ -166,7 +166,7 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 	// TUN -> Client (egress)
 	go func() {
 		buffer := make([]byte, MTU)
-		combinedBuf := make([]byte, 4+2000) // Combined buffer for single write
+		lengthBuf := make([]byte, 4) // Reuse length buffer
 		writer := bufio.NewWriter(conn) // Buffered writer
 		var writerMutex sync.Mutex // Protect writer from concurrent access
 
@@ -208,22 +208,26 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 				encrypted = packet
 			}
 
-		// Prepare combined packet: length (4 bytes) + encrypted data (single write)
-		binary.BigEndian.PutUint32(combinedBuf[:4], uint32(len(encrypted)))
-		copy(combinedBuf[4:], encrypted)
-		packetSize := 4 + len(encrypted)
-
-		writerMutex.Lock()
-		if _, err := writer.Write(combinedBuf[:packetSize]); err != nil {
-			writerMutex.Unlock()
-			log.Printf("Failed to send packet: %v", err)
-			done <- true
-			return
-		}
-		// Flush immediately if buffer is getting full (≥4KB)
-		if writer.Buffered() >= 4096 {
-			writer.Flush()
-		}
+			// Send packet length first (4 bytes), then packet using buffered writer
+			binary.BigEndian.PutUint32(lengthBuf, uint32(len(encrypted)))
+			writerMutex.Lock()
+			if _, err := writer.Write(lengthBuf); err != nil {
+				writerMutex.Unlock()
+				log.Printf("Failed to send length: %v", err)
+				done <- true
+				return
+			}
+			if _, err := writer.Write(encrypted); err != nil {
+				writerMutex.Unlock()
+				log.Printf("Failed to send packet: %v", err)
+				done <- true
+				return
+			}
+			// Flush immediately if buffer is getting full (≥4KB)
+			// This ensures fast TCP ramp-up without waiting for 1ms timer
+			if writer.Buffered() >= 4096 {
+				writer.Flush()
+			}
 			writerMutex.Unlock()
 			// Note: Periodic flusher handles remaining small batches
 		}

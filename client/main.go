@@ -328,7 +328,7 @@ func (c *VPNClient) Connect() error {
 	// TUN -> Server (egress)
 	go func() {
 		buffer := make([]byte, MTU)
-		combinedBuf := make([]byte, 4+2000) // Combined buffer for single write (length + max encrypted packet)
+		lengthBuf := make([]byte, 4) // Reuse length buffer
 		writer := bufio.NewWriter(conn) // Buffered writer
 		var writerMutex sync.Mutex // Protect writer from concurrent access
 
@@ -408,20 +408,23 @@ func (c *VPNClient) Connect() error {
 				continue
 			}
 
+			// Send packet length first, then packet using buffered writer
+			binary.BigEndian.PutUint32(lengthBuf, uint32(len(encrypted)))
 
 			// Measure mutex wait time
 			t2 := time.Now()
 			writerMutex.Lock()
 			timeMutexWait += time.Since(t2).Microseconds()
 
-			// Measure network write (single combined write for better performance)
+			// Measure network writes
 			t3 := time.Now()
-			// Prepare combined packet: length (4 bytes) + encrypted data
-			binary.BigEndian.PutUint32(combinedBuf[:4], uint32(len(encrypted)))
-			copy(combinedBuf[4:], encrypted)
-			packetSize := 4 + len(encrypted)
-
-			if _, err := writer.Write(combinedBuf[:packetSize]); err != nil {
+			if _, err := writer.Write(lengthBuf); err != nil {
+				writerMutex.Unlock()
+				log.Printf("Failed to send length: %v", err)
+				done <- true
+				return
+			}
+			if _, err := writer.Write(encrypted); err != nil {
 				writerMutex.Unlock()
 				log.Printf("Failed to send packet: %v", err)
 				done <- true
