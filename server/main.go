@@ -223,8 +223,13 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 				done <- true
 				return
 			}
+			// Flush immediately if buffer is getting full (≥4KB)
+			// This ensures fast TCP ramp-up without waiting for 1ms timer
+			if writer.Buffered() >= 4096 {
+				writer.Flush()
+			}
 			writerMutex.Unlock()
-			// Note: Periodic flusher handles flushing in background
+			// Note: Periodic flusher handles remaining small batches
 		}
 	}()
 

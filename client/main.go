@@ -336,7 +336,8 @@ func (c *VPNClient) Connect() error {
 		var packetsSent, flushCount, totalBytesSent int64
 		var lastReport = time.Now()
 
-		// Background flusher: flush every 1ms for low latency while allowing batching
+		// Background flusher: aggressive flushing for fast TCP ramp-up
+		// Flush immediately when buffer ≥ 4KB, OR every 1ms for smaller amounts
 		go func() {
 			ticker := time.NewTicker(1 * time.Millisecond)
 			defer ticker.Stop()
@@ -402,11 +403,17 @@ func (c *VPNClient) Connect() error {
 				done <- true
 				return
 			}
+			// Flush immediately if buffer is getting full (≥4KB)
+			// This ensures fast TCP ramp-up without waiting for 1ms timer
+			if writer.Buffered() >= 4096 {
+				writer.Flush()
+				flushCount++
+			}
 			writerMutex.Unlock()
 			// Update stats
 			packetsSent++
 			totalBytesSent += int64(len(encrypted))
-			// Note: Periodic flusher handles flushing in background
+			// Note: Periodic flusher handles remaining small batches
 		}
 	}()
 
