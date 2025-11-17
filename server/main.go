@@ -143,6 +143,14 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 	defer conn.Close()
 	log.Printf("Client connected from %s", conn.RemoteAddr())
 
+	// Tune TCP socket for high throughput
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetReadBuffer(1024 * 1024)  // 1MB receive buffer
+		tcpConn.SetWriteBuffer(1024 * 1024) // 1MB send buffer
+		tcpConn.SetNoDelay(true)            // Disable Nagle's algorithm for low latency
+		log.Printf("TCP socket tuned: 1MB buffers, NoDelay enabled")
+	}
+
 	// Read client's encryption preference
 	encryptByte := make([]byte, 1)
 	if _, err := conn.Read(encryptByte); err != nil {

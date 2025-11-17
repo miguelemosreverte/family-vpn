@@ -289,6 +289,15 @@ func (c *VPNClient) Connect() error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to server: %v", err)
 	}
+
+	// Tune TCP socket for high throughput
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetReadBuffer(1024 * 1024)  // 1MB receive buffer
+		tcpConn.SetWriteBuffer(1024 * 1024) // 1MB send buffer
+		tcpConn.SetNoDelay(true)            // Disable Nagle's algorithm for low latency
+		log.Printf("TCP socket tuned: 1MB buffers, NoDelay enabled")
+	}
+
 	c.conn = conn
 	log.Printf("Connected to VPN server at %s", c.serverAddr)
 
@@ -323,6 +332,10 @@ func (c *VPNClient) Connect() error {
 		writer := bufio.NewWriter(conn) // Buffered writer
 		var writerMutex sync.Mutex // Protect writer from concurrent access
 
+		// Diagnostics
+		var packetsSent, flushCount, totalBytesSent int64
+		var lastReport = time.Now()
+
 		// Background flusher: flush every 1ms for low latency while allowing batching
 		go func() {
 			ticker := time.NewTicker(1 * time.Millisecond)
@@ -330,8 +343,31 @@ func (c *VPNClient) Connect() error {
 			for c.enabled {
 				<-ticker.C
 				writerMutex.Lock()
-				writer.Flush()
+				buffered := writer.Buffered()
+				if buffered > 0 {
+					writer.Flush()
+					flushCount++
+				}
 				writerMutex.Unlock()
+			}
+		}()
+
+		// Stats reporter
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for c.enabled {
+				<-ticker.C
+				elapsed := time.Since(lastReport).Seconds()
+				pps := float64(packetsSent) / elapsed
+				mbps := (float64(totalBytesSent) * 8) / (elapsed * 1000000)
+				avgBatch := float64(packetsSent) / float64(flushCount)
+				if flushCount == 0 {
+					avgBatch = 0
+				}
+				log.Printf("[EGRESS] %.0f pkt/s, %.2f Mbps, %.1f pkt/flush, %d flushes", pps, mbps, avgBatch, flushCount)
+				packetsSent, totalBytesSent, flushCount = 0, 0, 0
+				lastReport = time.Now()
 			}
 		}()
 
@@ -367,6 +403,9 @@ func (c *VPNClient) Connect() error {
 				return
 			}
 			writerMutex.Unlock()
+			// Update stats
+			packetsSent++
+			totalBytesSent += int64(len(encrypted))
 			// Note: Periodic flusher handles flushing in background
 		}
 	}()
