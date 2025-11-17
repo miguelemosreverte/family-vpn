@@ -1,23 +1,17 @@
-# Binaries
-vpn-server
-vpn-client
-server/vpn-server
-client/vpn-client
+# Environment variables (contains secrets)
+.env
 
-# Go build artifacts
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-*.test
-*.out
+# Binaries
+client/vpn-client
+server/vpn-server
+*.prof
 
 # Logs
 *.log
+nohup.out
 
-# OS files
+# MacOS
 .DS_Store
 
-# Environment variables
-.env
+# Test outputs
+/tmp/
