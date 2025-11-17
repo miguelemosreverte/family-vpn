@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -154,6 +155,7 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 	go func() {
 		buffer := make([]byte, MTU)
 		lengthBuf := make([]byte, 4) // Reuse length buffer
+		writer := bufio.NewWriter(conn) // Buffered writer
 		for {
 			n, err := s.tunIface.Read(buffer)
 			if err != nil {
@@ -174,15 +176,21 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 				encrypted = packet
 			}
 
-			// Send packet length first (4 bytes), then packet
+			// Send packet length first (4 bytes), then packet using buffered writer
 			binary.BigEndian.PutUint32(lengthBuf, uint32(len(encrypted)))
-			if _, err := conn.Write(lengthBuf); err != nil {
+			if _, err := writer.Write(lengthBuf); err != nil {
 				log.Printf("Failed to send length: %v", err)
 				done <- true
 				return
 			}
-			if _, err := conn.Write(encrypted); err != nil {
+			if _, err := writer.Write(encrypted); err != nil {
 				log.Printf("Failed to send packet: %v", err)
+				done <- true
+				return
+			}
+			// Flush after each packet to avoid delays
+			if err := writer.Flush(); err != nil {
+				log.Printf("Failed to flush: %v", err)
 				done <- true
 				return
 			}
@@ -193,9 +201,10 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 	go func() {
 		lengthBuf := make([]byte, 4)
 		packetBuf := make([]byte, MTU*2) // Reuse packet buffer (sized for encrypted packets)
+		reader := bufio.NewReader(conn)  // Buffered reader
 		for {
 			// Read packet length
-			if _, err := io.ReadFull(conn, lengthBuf); err != nil {
+			if _, err := io.ReadFull(reader, lengthBuf); err != nil {
 				log.Printf("Failed to read length: %v", err)
 				done <- true
 				return
@@ -209,7 +218,7 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 			}
 
 			// Reuse buffer by slicing to the exact length needed
-			if _, err := io.ReadFull(conn, packetBuf[:length]); err != nil {
+			if _, err := io.ReadFull(reader, packetBuf[:length]); err != nil {
 				log.Printf("Failed to read packet: %v", err)
 				done <- true
 				return
