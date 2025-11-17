@@ -316,6 +316,7 @@ func (c *VPNClient) Connect() error {
 	// TUN -> Server (egress)
 	go func() {
 		buffer := make([]byte, MTU)
+		lengthBuf := make([]byte, 4) // Reuse length buffer
 		for c.enabled {
 			n, err := c.tunIface.Read(buffer)
 			if err != nil {
@@ -326,18 +327,15 @@ func (c *VPNClient) Connect() error {
 
 			packet := buffer[:n]
 
-
 			encrypted, err := c.encrypt(packet)
 			if err != nil {
 				log.Printf("Encryption error: %v", err)
 				continue
 			}
 
-
 			// Send packet length first, then packet
-			length := make([]byte, 4)
-			binary.BigEndian.PutUint32(length, uint32(len(encrypted)))
-			if _, err := conn.Write(length); err != nil {
+			binary.BigEndian.PutUint32(lengthBuf, uint32(len(encrypted)))
+			if _, err := conn.Write(lengthBuf); err != nil {
 				log.Printf("Failed to send length: %v", err)
 				done <- true
 				return
@@ -353,6 +351,7 @@ func (c *VPNClient) Connect() error {
 	// Server -> TUN (ingress)
 	go func() {
 		lengthBuf := make([]byte, 4)
+		packetBuf := make([]byte, MTU*2) // Reuse packet buffer (sized for encrypted packets)
 		for c.enabled {
 			// Read packet length
 			if _, err := io.ReadFull(conn, lengthBuf); err != nil {
@@ -368,20 +367,18 @@ func (c *VPNClient) Connect() error {
 				return
 			}
 
-			buffer := make([]byte, length)
-			if _, err := io.ReadFull(conn, buffer); err != nil {
+			// Reuse buffer by slicing to the exact length needed
+			if _, err := io.ReadFull(conn, packetBuf[:length]); err != nil {
 				log.Printf("Failed to read packet: %v", err)
 				done <- true
 				return
 			}
 
-
-			packet, err := c.decrypt(buffer)
+			packet, err := c.decrypt(packetBuf[:length])
 			if err != nil {
 				log.Printf("Decryption error: %v", err)
 				continue
 			}
-
 
 			if _, err := c.tunIface.Write(packet); err != nil {
 				log.Printf("TUN write error: %v", err)
