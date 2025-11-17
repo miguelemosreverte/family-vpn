@@ -39,16 +39,16 @@ type VPNClient struct {
 	enabled    bool
 	originalGW string
 	tunName    string
-	// forever    bool  // TODO: Add support for --forever flag in the future
+	noTimeout  bool  // If true, run indefinitely (for production use)
 }
 
-func NewVPNClient(serverAddr string, encryption bool, key []byte) *VPNClient {
+func NewVPNClient(serverAddr string, encryption bool, key []byte, noTimeout bool) *VPNClient {
 	return &VPNClient{
 		serverAddr: serverAddr,
 		encryption: encryption,
 		key:        key,
 		enabled:    false,
-		// forever:    forever,  // TODO: Add support for --forever flag in the future
+		noTimeout:  noTimeout,
 	}
 }
 
@@ -493,17 +493,15 @@ func (c *VPNClient) Connect() error {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Setup timeout for development safety (60 seconds)
-	log.Println("Development mode: VPN will automatically shut down after 60 seconds")
-	timeoutChan := time.After(60 * time.Second)
-
-	// TODO: Add --forever flag support to disable timeout for production use
-	// var timeoutChan <-chan time.Time
-	// if !c.forever {
-	// 	log.Println("Development mode: VPN will automatically shut down after 30 seconds")
-	// 	log.Println("Use --forever flag to run indefinitely")
-	// 	timeoutChan = time.After(30 * time.Second)
-	// }
+	// Setup timeout for development safety (60 seconds by default)
+	var timeoutChan <-chan time.Time
+	if !c.noTimeout {
+		log.Println("Development mode: VPN will automatically shut down after 60 seconds")
+		log.Println("Use --no-timeout flag to run indefinitely")
+		timeoutChan = time.After(60 * time.Second)
+	} else {
+		log.Println("Running in production mode (no timeout)")
+	}
 
 	select {
 	case <-done:
@@ -540,7 +538,7 @@ func main() {
 	server := flag.String("server", "", "VPN server address (e.g., 95.217.238.72:8888)")
 	encrypt := flag.Bool("encrypt", false, "Enable encryption")
 	cpuprofile := flag.String("cpuprofile", "", "Write CPU profile to file")
-	// forever := flag.Bool("forever", false, "Run indefinitely (default: 30s timeout for development safety)")  // TODO: Add in the future
+	noTimeout := flag.Bool("no-timeout", false, "Run indefinitely (default: 60s timeout for safety)")
 	flag.Parse()
 
 	if *server == "" {
@@ -564,7 +562,7 @@ func main() {
 	// Use same key as server (in production, use proper key exchange)
 	key := []byte("0123456789abcdef0123456789abcdef") // 32 bytes for AES-256
 
-	client := NewVPNClient(*server, *encrypt, key)
+	client := NewVPNClient(*server, *encrypt, key, *noTimeout)
 	if err := client.Connect(); err != nil {
 		log.Fatal(err)
 	}
