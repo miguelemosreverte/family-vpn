@@ -326,6 +326,54 @@ chmod 600 ~/.ssh/id_ed25519_hetzner
 ssh-add ~/.ssh/id_ed25519_hetzner
 ```
 
+### 🚨 Emergency: VPN Client Crashed / Internet Broken
+
+**Symptoms:** VPN client was killed/crashed, and now internet doesn't work at all.
+
+**What happened:** The VPN changed your routing and DNS, but didn't clean up when it died. Your computer is trying to route traffic through a dead VPN tunnel.
+
+**Quick Fix:**
+
+```bash
+# Run the emergency cleanup script
+./cleanup-vpn.sh
+```
+
+**Manual Recovery (if script doesn't work):**
+
+```bash
+# 1. Kill zombie VPN process
+sudo pkill -9 vpn-client
+
+# 2. Check routing
+netstat -rn | grep default
+# If shows "10.8.0.1" → routing is broken!
+
+# 3. Delete broken VPN route
+sudo route -n delete default
+
+# 4. Restore original gateway (replace with YOUR router IP)
+sudo route -n add -net default 192.168.100.1
+
+# 5. Reset DNS to automatic
+sudo networksetup -setdnsservers Wi-Fi Empty
+
+# 6. Test internet
+ping 8.8.8.8
+curl ifconfig.me  # Should show your real IP
+```
+
+**If still broken:**
+
+```bash
+# Restart Wi-Fi
+sudo networksetup -setairportpower en0 off
+sleep 2
+sudo networksetup -setairportpower en0 on
+
+# Or worst case: restart computer
+```
+
 ---
 
 ## 🏗️ Architecture
@@ -373,6 +421,7 @@ ssh-add ~/.ssh/id_ed25519_hetzner
 - `deploy-server.sh` - Deploy latest code to server
 - `test-doctor.sh` - Comprehensive VPN testing
 - `test-doctor-http.sh` - HTTP download performance test
+- `cleanup-vpn.sh` - 🚨 Emergency cleanup if VPN crashes
 
 ### Important Files
 
