@@ -33,35 +33,33 @@ gh auth login
 # Follow prompts: choose HTTPS, login with browser, paste the code shown
 ```
 
-### 3. Retrieve Secrets from GitHub
+### 3. Retrieve Secrets from GitHub Gist
 
-The repository secrets are stored securely in GitHub. Retrieve them to your local `.env` file:
+The `.env` file with all secrets is stored in a **private GitHub Gist**. This is much easier than GitHub repository secrets (which only work for Actions).
 
 ```bash
-# Create .env file from GitHub secrets
-gh secret list  # Verify secrets exist
+# Clone the secret gist containing .env
+gh gist clone b523442d7bec467dbba22a21feab027e
 
-# Method 1: Manually create .env (copy from .env.example and fill in)
+# Copy .env to your VPN directory
+cp b523442d7bec467dbba22a21feab027e/.env .
+
+# Verify it worked
+cat .env  # Should show VPN_SERVER_HOST, VPN_SSH_KEY, etc.
+
+# Delete the gist clone (keep only .env)
+rm -rf b523442d7bec467dbba22a21feab027e
+```
+
+**Alternative: Manually create .env**
+```bash
 cp .env.example .env
-nano .env  # Edit with your values
-
-# Method 2: Retrieve from GitHub Actions (if configured)
-# Secrets are: VPN_SERVER_HOST, VPN_SSH_KEY, SUDO_PASSWORD
+nano .env  # Fill in: VPN_SERVER_HOST, VPN_SSH_KEY path, SUDO_PASSWORD
 ```
 
-**To view/manage secrets:**
-```bash
-# List all secrets
-gh secret list
-
-# View when a secret was last updated
-gh secret list
-
-# Set/update a secret
-gh secret set VPN_SERVER_HOST -b "YOUR_SERVER_IP"
-gh secret set VPN_SSH_KEY < ~/.ssh/your_ssh_key
-gh secret set SUDO_PASSWORD -b "your_password"
-```
+**Gist URL (for reference):**
+- https://gist.github.com/miguelemosreverte/b523442d7bec467dbba22a21feab027e
+- This is a **secret gist** - only visible when logged into GitHub
 
 ### 4. Build the VPN Client
 
@@ -212,40 +210,45 @@ git push
 
 ### Where Secrets Are Stored
 
-1. **GitHub Repository Secrets** - Encrypted, accessible via `gh secret list`
+1. **Private GitHub Gist** - `.env` file stored securely, retrievable on any computer
 2. **Local `.env` file** - Gitignored, only on your computer
 3. **Never in git commits** - .gitignore prevents accidental commits
 
 ### Retrieving Secrets on New Computer
 
+**Best Method: Clone the private gist**
+
 ```bash
-# Option 1: View in GitHub web UI
-# Go to: https://github.com/miguelemosreverte/family-vpn/settings/secrets/actions
+# Clone the gist containing .env
+gh gist clone b523442d7bec467dbba22a21feab027e
 
-# Option 2: Use GitHub CLI
-gh secret list  # Lists all secrets (but not their values)
+# Copy to VPN directory
+cp b523442d7bec467dbba22a21feab027e/.env .
 
-# Option 3: Manually recreate .env
-cp .env.example .env
-# Fill in values (you need to know them or retrieve from secure storage)
+# Clean up
+rm -rf b523442d7bec467dbba22a21feab027e
 ```
 
-**Note:** GitHub secrets can only be *set*, not *retrieved* via CLI. You'll need to either:
-- Remember the values
-- Store them in a password manager (1Password, LastPass, etc.)
-- Document them in a secure location
+**Gist URL:** https://gist.github.com/miguelemosreverte/b523442d7bec467dbba22a21feab027e
 
-### Adding a New Secret
+**Alternative:** Manually recreate .env from template
+```bash
+cp .env.example .env
+nano .env  # Fill in values from memory or password manager
+```
+
+### Updating the Gist (when secrets change)
 
 ```bash
-# Via GitHub CLI
-gh secret set SECRET_NAME -b "secret_value"
+# Edit your local .env file
+nano .env
 
-# Via file (for SSH keys)
-gh secret set VPN_SSH_KEY < ~/.ssh/id_ed25519_hetzner
+# Update the gist
+gh gist edit b523442d7bec467dbba22a21feab027e .env
 
-# Via GitHub web UI
-# Go to: Settings → Secrets and variables → Actions → New repository secret
+# Or delete and recreate
+gh gist delete b523442d7bec467dbba22a21feab027e
+gh gist create .env -d "Family VPN secrets - private .env file"
 ```
 
 ---
