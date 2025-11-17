@@ -453,7 +453,41 @@ func (c *VPNClient) Connect() error {
 		lengthBuf := make([]byte, 4)
 		packetBuf := make([]byte, MTU*2) // Reuse packet buffer (sized for encrypted packets)
 		reader := bufio.NewReader(conn)  // Buffered reader
+
+		// Diagnostics
+		var packetsRecv, totalBytesRecv int64
+		var lastReport = time.Now()
+		// Timing breakdown (in microseconds)
+		var timeNetRead, timeDecrypt, timeTunWrite int64
+
+		// Stats reporter
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for c.enabled {
+				<-ticker.C
+				elapsed := time.Since(lastReport).Seconds()
+				pps := float64(packetsRecv) / elapsed
+				mbps := (float64(totalBytesRecv) * 8) / (elapsed * 1000000)
+				// Calculate average time per operation in microseconds
+				var avgNetRead, avgDecrypt, avgTunWrite float64
+				if packetsRecv > 0 {
+					avgNetRead = float64(timeNetRead) / float64(packetsRecv)
+					avgDecrypt = float64(timeDecrypt) / float64(packetsRecv)
+					avgTunWrite = float64(timeTunWrite) / float64(packetsRecv)
+				}
+				log.Printf("[INGRESS] %.0f pkt/s, %.2f Mbps", pps, mbps)
+				log.Printf("[TIMING] NetRead:%.0fµs Decrypt:%.0fµs TUNWrite:%.0fµs",
+					avgNetRead, avgDecrypt, avgTunWrite)
+				packetsRecv, totalBytesRecv = 0, 0
+				timeNetRead, timeDecrypt, timeTunWrite = 0, 0, 0
+				lastReport = time.Now()
+			}
+		}()
+
 		for c.enabled {
+			// Measure network read (length + packet)
+			t0 := time.Now()
 			// Read packet length
 			if _, err := io.ReadFull(reader, lengthBuf); err != nil {
 				log.Printf("Failed to read length: %v", err)
@@ -474,18 +508,29 @@ func (c *VPNClient) Connect() error {
 				done <- true
 				return
 			}
+			timeNetRead += time.Since(t0).Microseconds()
 
+			// Measure decryption
+			t1 := time.Now()
 			packet, err := c.decrypt(packetBuf[:length])
+			timeDecrypt += time.Since(t1).Microseconds()
 			if err != nil {
 				log.Printf("Decryption error: %v", err)
 				continue
 			}
 
+			// Measure TUN write
+			t2 := time.Now()
 			if _, err := c.tunIface.Write(packet); err != nil {
 				log.Printf("TUN write error: %v", err)
 				done <- true
 				return
 			}
+			timeTunWrite += time.Since(t2).Microseconds()
+
+			// Update stats
+			packetsRecv++
+			totalBytesRecv += int64(len(packet))
 		}
 	}()
 

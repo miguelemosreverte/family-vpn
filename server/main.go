@@ -170,6 +170,12 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 		writer := bufio.NewWriterSize(conn, 131072) // 128KB buffer for downloads
 		var writerMutex sync.Mutex // Protect writer from concurrent access
 
+		// Diagnostics
+		var packetsSent, flushCount, totalBytesSent int64
+		var lastReport = time.Now()
+		// Timing breakdown (in microseconds)
+		var timeTunRead, timeEncrypt, timeMutexWait, timeNetWrite, timeFlush int64
+
 		// Background flusher: flush every 1ms for low latency while allowing batching
 		flushDone := make(chan bool)
 		go func() {
@@ -179,7 +185,11 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 				select {
 				case <-ticker.C:
 					writerMutex.Lock()
-					writer.Flush()
+					buffered := writer.Buffered()
+					if buffered > 0 {
+						writer.Flush()
+						flushCount++
+					}
 					writerMutex.Unlock()
 				case <-flushDone:
 					return
@@ -188,8 +198,46 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 		}()
 		defer close(flushDone)
 
+		// Stats reporter
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					elapsed := time.Since(lastReport).Seconds()
+					pps := float64(packetsSent) / elapsed
+					mbps := (float64(totalBytesSent) * 8) / (elapsed * 1000000)
+					avgBatch := float64(packetsSent) / float64(flushCount)
+					if flushCount == 0 {
+						avgBatch = 0
+					}
+					// Calculate average time per operation in microseconds
+					var avgTunRead, avgEncrypt, avgMutex, avgNetWrite, avgFlush float64
+					if packetsSent > 0 {
+						avgTunRead = float64(timeTunRead) / float64(packetsSent)
+						avgEncrypt = float64(timeEncrypt) / float64(packetsSent)
+						avgMutex = float64(timeMutexWait) / float64(packetsSent)
+						avgNetWrite = float64(timeNetWrite) / float64(packetsSent)
+						avgFlush = float64(timeFlush) / float64(packetsSent)
+					}
+					log.Printf("[SERVER-EGRESS] %.0f pkt/s, %.2f Mbps, %.1f pkt/flush", pps, mbps, avgBatch)
+					log.Printf("[TIMING] TUN:%.0fµs Encrypt:%.0fµs Mutex:%.0fµs NetWrite:%.0fµs Flush:%.0fµs",
+						avgTunRead, avgEncrypt, avgMutex, avgNetWrite, avgFlush)
+					packetsSent, totalBytesSent, flushCount = 0, 0, 0
+					timeTunRead, timeEncrypt, timeMutexWait, timeNetWrite, timeFlush = 0, 0, 0, 0, 0
+					lastReport = time.Now()
+				case <-done:
+					return
+				}
+			}
+		}()
+
 		for {
+			// Measure TUN read
+			t0 := time.Now()
 			n, err := s.tunIface.Read(buffer)
+			timeTunRead += time.Since(t0).Microseconds()
 			if err != nil {
 				log.Printf("TUN read error: %v", err)
 				done <- true
@@ -197,6 +245,9 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 			}
 
 			packet := buffer[:n]
+
+			// Measure encryption
+			t1 := time.Now()
 			var encrypted []byte
 			if clientWantsEncryption {
 				encrypted, err = s.encryptData(packet)
@@ -207,10 +258,18 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 			} else {
 				encrypted = packet
 			}
+			timeEncrypt += time.Since(t1).Microseconds()
 
 			// Send packet length first (4 bytes), then packet using buffered writer
 			binary.BigEndian.PutUint32(lengthBuf, uint32(len(encrypted)))
+
+			// Measure mutex wait time
+			t2 := time.Now()
 			writerMutex.Lock()
+			timeMutexWait += time.Since(t2).Microseconds()
+
+			// Measure network writes
+			t3 := time.Now()
 			if _, err := writer.Write(lengthBuf); err != nil {
 				writerMutex.Unlock()
 				log.Printf("Failed to send length: %v", err)
@@ -223,12 +282,21 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 				done <- true
 				return
 			}
+			timeNetWrite += time.Since(t3).Microseconds()
+
 			// Flush immediately if buffer is getting full (≥64KB, half of 128KB buffer)
 			// This ensures fast TCP ramp-up without waiting for 1ms timer
 			if writer.Buffered() >= 65536 {
+				t4 := time.Now()
 				writer.Flush()
+				timeFlush += time.Since(t4).Microseconds()
+				flushCount++
 			}
 			writerMutex.Unlock()
+
+			// Update stats
+			packetsSent++
+			totalBytesSent += int64(len(encrypted))
 			// Note: Periodic flusher handles remaining small batches
 		}
 	}()
@@ -238,7 +306,45 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 		lengthBuf := make([]byte, 4)
 		packetBuf := make([]byte, MTU*2) // Reuse packet buffer (sized for encrypted packets)
 		reader := bufio.NewReader(conn)  // Buffered reader
+
+		// Diagnostics
+		var packetsRecv, totalBytesRecv int64
+		var lastReport = time.Now()
+		// Timing breakdown (in microseconds)
+		var timeNetRead, timeDecrypt, timeTunWrite int64
+
+		// Stats reporter
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					elapsed := time.Since(lastReport).Seconds()
+					pps := float64(packetsRecv) / elapsed
+					mbps := (float64(totalBytesRecv) * 8) / (elapsed * 1000000)
+					// Calculate average time per operation in microseconds
+					var avgNetRead, avgDecrypt, avgTunWrite float64
+					if packetsRecv > 0 {
+						avgNetRead = float64(timeNetRead) / float64(packetsRecv)
+						avgDecrypt = float64(timeDecrypt) / float64(packetsRecv)
+						avgTunWrite = float64(timeTunWrite) / float64(packetsRecv)
+					}
+					log.Printf("[SERVER-INGRESS] %.0f pkt/s, %.2f Mbps", pps, mbps)
+					log.Printf("[TIMING] NetRead:%.0fµs Decrypt:%.0fµs TUNWrite:%.0fµs",
+						avgNetRead, avgDecrypt, avgTunWrite)
+					packetsRecv, totalBytesRecv = 0, 0
+					timeNetRead, timeDecrypt, timeTunWrite = 0, 0, 0
+					lastReport = time.Now()
+				case <-done:
+					return
+				}
+			}
+		}()
+
 		for {
+			// Measure network read (length + packet)
+			t0 := time.Now()
 			// Read packet length
 			if _, err := io.ReadFull(reader, lengthBuf); err != nil {
 				log.Printf("Failed to read length: %v", err)
@@ -259,7 +365,10 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 				done <- true
 				return
 			}
+			timeNetRead += time.Since(t0).Microseconds()
 
+			// Measure decryption
+			t1 := time.Now()
 			var packet []byte
 			var err error
 			if clientWantsEncryption {
@@ -271,12 +380,20 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 			} else {
 				packet = packetBuf[:length]
 			}
+			timeDecrypt += time.Since(t1).Microseconds()
 
+			// Measure TUN write
+			t2 := time.Now()
 			if _, err := s.tunIface.Write(packet); err != nil {
 				log.Printf("TUN write error: %v (packet size: %d)", err, len(packet))
 				done <- true
 				return
 			}
+			timeTunWrite += time.Since(t2).Microseconds()
+
+			// Update stats
+			packetsRecv++
+			totalBytesRecv += int64(len(packet))
 		}
 	}()
 
