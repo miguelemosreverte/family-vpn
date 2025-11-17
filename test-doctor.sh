@@ -173,7 +173,8 @@ measure_throughput() {
 
     # Extract bits_per_second from JSON and convert to Mbps
     # Using grep/sed instead of jq for portability
-    local bps=$(echo "$output" | grep -o '"bits_per_second"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | grep -o '[0-9.]*$')
+    # Use tail -2 | head -1 to get sender's final average (second-to-last value)
+    local bps=$(echo "$output" | grep -o '"bits_per_second"[[:space:]]*:[[:space:]]*[0-9.]*' | tail -2 | head -1 | grep -o '[0-9.]*$')
 
     if [[ -z "$bps" ]]; then
         echo "FAILED (no bps)"
