@@ -11,7 +11,9 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
 	"os/exec"
+	"runtime/pprof"
 
 	"github.com/songgao/water"
 )
@@ -273,7 +275,22 @@ func (s *VPNServer) Start() error {
 
 func main() {
 	port := flag.String("port", "8888", "Port to listen on")
+	cpuprofile := flag.String("cpuprofile", "", "Write CPU profile to file")
 	flag.Parse()
+
+	// Start CPU profiling if requested
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err != nil {
+			log.Fatal("Could not create CPU profile: ", err)
+		}
+		defer f.Close()
+		if err := pprof.StartCPUProfile(f); err != nil {
+			log.Fatal("Could not start CPU profile: ", err)
+		}
+		defer pprof.StopCPUProfile()
+		log.Printf("CPU profiling enabled, writing to: %s", *cpuprofile)
+	}
 
 	// Generate or use a fixed key (in production, use proper key management)
 	key := []byte("0123456789abcdef0123456789abcdef") // 32 bytes for AES-256

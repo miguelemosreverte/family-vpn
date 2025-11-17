@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"runtime/pprof"
 	"syscall"
 	"time"
 
@@ -447,11 +448,26 @@ func (c *VPNClient) Disconnect() error {
 func main() {
 	server := flag.String("server", "", "VPN server address (e.g., 95.217.238.72:8888)")
 	encrypt := flag.Bool("encrypt", false, "Enable encryption")
+	cpuprofile := flag.String("cpuprofile", "", "Write CPU profile to file")
 	// forever := flag.Bool("forever", false, "Run indefinitely (default: 30s timeout for development safety)")  // TODO: Add in the future
 	flag.Parse()
 
 	if *server == "" {
 		log.Fatal("Server address is required. Use -server flag")
+	}
+
+	// Start CPU profiling if requested
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err != nil {
+			log.Fatal("Could not create CPU profile: ", err)
+		}
+		defer f.Close()
+		if err := pprof.StartCPUProfile(f); err != nil {
+			log.Fatal("Could not start CPU profile: ", err)
+		}
+		defer pprof.StopCPUProfile()
+		log.Printf("CPU profiling enabled, writing to: %s", *cpuprofile)
 	}
 
 	// Use same key as server (in production, use proper key exchange)

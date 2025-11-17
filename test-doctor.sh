@@ -18,8 +18,8 @@ CONNECT_TIMEOUT=${CONNECT_TIMEOUT:-20}
 SUDO_PASS="${SUDO_PASS:-osopanda}"
 LOG_DIR="${LOG_DIR:-/tmp}"
 PING_COUNT=${PING_COUNT:-3}  # 3 pings for quick average
-THROUGHPUT_URL="${THROUGHPUT_URL:-http://speedtest.tele2.net/1KB.zip}"  # 1KB - fast test
-THROUGHPUT_TIMEOUT=${THROUGHPUT_TIMEOUT:-8}  # 8 seconds max per test
+IPERF_DURATION=${IPERF_DURATION:-10}  # 10 seconds per iperf3 test
+IPERF_PORT=${IPERF_PORT:-5201}  # iperf3 default port
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -47,7 +47,7 @@ encrypted_latency=""
 encrypted_throughput=""
 encrypted_encryption=""
 
-for cmd in tcpdump curl ping; do
+for cmd in tcpdump curl ping iperf3; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
         echo -e "${RED}Missing dependency: $cmd${NC}" >&2
         exit 1
@@ -150,19 +150,19 @@ measure_latency() {
 }
 
 measure_throughput() {
-    local url="$1"
+    local target="$1"
     local output
 
-    # Download and measure speed (returns bytes/sec)
-    output=$(curl -s --max-time "$THROUGHPUT_TIMEOUT" -w '%{speed_download}' -o /dev/null "$url" 2>&1)
-    local curl_exit=$?
+    # Use iperf3 to measure bandwidth
+    output=$(iperf3 -c "$target" -p "$IPERF_PORT" -t "$IPERF_DURATION" -J 2>/dev/null)
+    local iperf_exit=$?
 
     # Debug logging
-    echo "DEBUG: curl_exit=$curl_exit, output='$output', len=${#output}" >> /tmp/doctor-debug.log
+    echo "DEBUG: iperf_exit=$iperf_exit, target=$target" >> /tmp/doctor-debug.log
 
-    # Check if curl failed or returned empty/invalid output
-    if [[ $curl_exit -ne 0 ]]; then
-        echo "FAILED (exit:$curl_exit)"
+    # Check if iperf3 failed
+    if [[ $iperf_exit -ne 0 ]]; then
+        echo "FAILED (exit:$iperf_exit)"
         return 1
     fi
 
@@ -171,19 +171,17 @@ measure_throughput() {
         return 1
     fi
 
-    if ! [[ "$output" =~ ^[0-9]+$ ]]; then
-        echo "FAILED (non-numeric)"
+    # Extract bits_per_second from JSON and convert to Mbps
+    # Using grep/sed instead of jq for portability
+    local bps=$(echo "$output" | grep -o '"bits_per_second"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | grep -o '[0-9.]*$')
+
+    if [[ -z "$bps" ]]; then
+        echo "FAILED (no bps)"
         return 1
     fi
 
-    # Check if speed is effectively zero
-    if [[ "$output" -lt 1000 ]]; then
-        echo "FAILED (too slow: $output bytes/sec)"
-        return 1
-    fi
-
-    # Convert bytes/sec to Mbps
-    local mbps=$(echo "scale=2; $output * 8 / 1000000" | bc)
+    # Convert bits/sec to Mbps
+    local mbps=$(echo "scale=2; $bps / 1000000" | bc)
     echo "$mbps"
 }
 
@@ -257,7 +255,10 @@ test_throughput() {
     local encrypt_flag="$2"
     echo -n "  Measuring throughput... "
 
+    # Determine target for iperf3
+    local target="$SERVER_IP"  # Default: test to public IP
     if [[ "$mode" != "off" ]]; then
+        target="10.8.0.1"  # VPN mode: test to VPN server IP
         if ! start_vpn "$mode" "$encrypt_flag"; then
             echo -e "${RED}✗${NC}"
             eval "${mode}_throughput=FAILED"
@@ -267,7 +268,7 @@ test_throughput() {
     fi
 
     local throughput
-    throughput=$(measure_throughput "$THROUGHPUT_URL")
+    throughput=$(measure_throughput "$target")
 
     if [[ "$throughput" =~ ^FAILED ]]; then
         echo -e "${RED}✗${NC}"
