@@ -169,6 +169,21 @@ func (c *VPNClient) routeAllTraffic() error {
 		}
 	}
 
+	// Configure DNS to use fast public resolvers through VPN
+	// This prevents DNS leaks and improves privacy
+	if runtime.GOOS == "darwin" {
+		// macOS: Use networksetup to configure DNS
+		cmd := exec.Command("networksetup", "-setdnsservers", "Wi-Fi", "1.1.1.1", "8.8.8.8")
+		if err := cmd.Run(); err != nil {
+			log.Printf("Warning: failed to set DNS servers: %v (DNS may leak)", err)
+		} else {
+			log.Println("DNS configured: 1.1.1.1 (Cloudflare), 8.8.8.8 (Google) through VPN")
+		}
+	} else {
+		// Linux: Modify /etc/resolv.conf
+		// TODO: Implement for Linux if needed
+	}
+
 	log.Println("All traffic now routed through VPN")
 	return nil
 }
@@ -187,6 +202,14 @@ func (c *VPNClient) restoreRouting() error {
 				return fmt.Errorf("failed to restore default route: %v", err)
 			}
 			log.Println("Routing restored to original gateway")
+		}
+
+		// Restore DNS to DHCP (automatic)
+		cmd = exec.Command("networksetup", "-setdnsservers", "Wi-Fi", "Empty")
+		if err := cmd.Run(); err != nil {
+			log.Printf("Warning: failed to restore DNS: %v", err)
+		} else {
+			log.Println("DNS restored to automatic (DHCP)")
 		}
 	} else {
 		// Linux routing restoration
