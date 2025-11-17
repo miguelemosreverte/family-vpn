@@ -294,9 +294,10 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 			}
 			timeNetWrite += time.Since(t3).Microseconds()
 
-			// Flush immediately if buffer is getting full (≥64KB, half of 128KB buffer)
-			// This ensures fast TCP ramp-up without waiting for 1ms timer
-			if writer.Buffered() >= 65536 {
+			// Flush immediately if buffer reaches 4KB to minimize latency during TCP slow start
+			// This prevents micro-bursts that confuse TCP congestion control
+			// During high throughput, periodic flusher (1ms) handles bulk traffic efficiently
+			if writer.Buffered() >= 4096 {
 				t4 := time.Now()
 				writer.Flush()
 				timeFlush += time.Since(t4).Microseconds()

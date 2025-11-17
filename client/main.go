@@ -432,9 +432,10 @@ func (c *VPNClient) Connect() error {
 			}
 			timeNetWrite += time.Since(t3).Microseconds()
 
-			// Flush immediately if buffer is getting full (≥4KB)
-			// This ensures fast TCP ramp-up without waiting for 1ms timer
-			if writer.Buffered() >= 4096 {
+			// Flush immediately if buffer reaches 2KB to minimize latency during TCP slow start
+			// Lower threshold than server (2KB vs 4KB) since client initiates most connections
+			// This prevents micro-bursts that confuse TCP congestion control
+			if writer.Buffered() >= 2048 {
 				t4 := time.Now()
 				writer.Flush()
 				timeFlush += time.Since(t4).Microseconds()
