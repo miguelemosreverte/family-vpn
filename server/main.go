@@ -88,6 +88,16 @@ func (s *VPNServer) setupTUN() error {
 		return fmt.Errorf("failed to enable IP forwarding: %v", err)
 	}
 
+	// Configure TCP MSS clamping to prevent fragmentation issues with encryption
+	// MSS = MTU (1400) - IP header (20) - TCP header (20) = 1360
+	// This ensures TCP segments fit within VPN MTU after adding encryption overhead (~28 bytes)
+	cmd = exec.Command("iptables", "-t", "mangle", "-A", "FORWARD", "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-j", "TCPMSS", "--set-mss", "1360")
+	if err := cmd.Run(); err != nil {
+		log.Printf("Warning: failed to set TCP MSS clamping: %v (downloads may fail)", err)
+	} else {
+		log.Printf("TCP MSS clamping enabled (MSS=1360) for MTU=%d", MTU)
+	}
+
 	log.Printf("TUN device %s configured with IP %s", iface.Name(), SERVER_IP)
 	return nil
 }
