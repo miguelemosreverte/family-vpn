@@ -274,7 +274,19 @@ func (s *VPNServer) broadcastControlMessage(command string) {
 func (s *VPNServer) handleClient(conn net.Conn) {
 	defer conn.Close()
 
-	publicIP := conn.RemoteAddr().(*net.TCPAddr).IP.String()
+	// Extract public IP - handle both TLS and non-TLS connections
+	var publicIP string
+	if tlsConn, ok := conn.(*tls.Conn); ok {
+		// For TLS connections, get the underlying connection's remote address
+		publicIP = tlsConn.RemoteAddr().String()
+		if tcpAddr, ok := tlsConn.RemoteAddr().(*net.TCPAddr); ok {
+			publicIP = tcpAddr.IP.String()
+		}
+	} else if tcpAddr, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+		publicIP = tcpAddr.IP.String()
+	} else {
+		publicIP = conn.RemoteAddr().String()
+	}
 	log.Printf("Client connected from %s", publicIP)
 
 	// Register client connection
@@ -296,8 +308,18 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 		log.Printf("Client disconnected: %s", publicIP)
 	}()
 
-	// Tune TCP socket for high throughput
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
+	// Tune TCP socket for high throughput - handle both TLS and non-TLS
+	var tcpConn *net.TCPConn
+	if tlsConn, ok := conn.(*tls.Conn); ok {
+		// For TLS connections, get underlying TCP connection
+		if underlying, ok := tlsConn.NetConn().(*net.TCPConn); ok {
+			tcpConn = underlying
+		}
+	} else if directTCP, ok := conn.(*net.TCPConn); ok {
+		tcpConn = directTCP
+	}
+
+	if tcpConn != nil {
 		tcpConn.SetReadBuffer(1024 * 1024)  // 1MB receive buffer
 		tcpConn.SetWriteBuffer(1024 * 1024) // 1MB send buffer
 		tcpConn.SetNoDelay(true)            // Disable Nagle's algorithm for low latency
