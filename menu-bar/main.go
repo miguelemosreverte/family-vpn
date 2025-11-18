@@ -46,9 +46,9 @@ var (
 	mDuration *systray.MenuItem
 	mData    *systray.MenuItem
 
-	// VPN Configuration - read from environment or use defaults
-	vpnServerHost = getEnv("VPN_SERVER_HOST", "95.217.238.72") // Default server from family-vpn
-	vpnServerPort = getEnv("VPN_SERVER_PORT", "443") // Port 443 for HTTPS stealth
+	// VPN Configuration - will be loaded from .env file in main()
+	vpnServerHost string
+	vpnServerPort string
 
 	// Development mode - disables auto-connect
 	devMode bool
@@ -258,6 +258,11 @@ func main() {
 	if err := loadEnvFile(); err != nil {
 		log.Printf("Warning: Failed to load .env file: %v", err)
 	}
+
+	// Initialize VPN configuration from environment (after .env is loaded)
+	vpnServerHost = getEnv("VPN_SERVER_HOST", "95.217.238.72")
+	vpnServerPort = getEnv("VPN_SERVER_PORT", "443")
+	log.Printf("VPN Server: %s:%s", vpnServerHost, vpnServerPort)
 
 	// Start auto-updater in background
 	go autoUpdater()
