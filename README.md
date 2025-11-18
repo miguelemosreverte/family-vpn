@@ -4,6 +4,7 @@ Secure, encrypted VPN built from scratch with AES-256-GCM encryption.
 
 ## Features
 
+- 🖥️ **macOS Menu Bar App** - One-click VPN toggle with auto-connect on login
 - ✅ **AES-256-GCM encryption** - Military-grade encryption for all traffic
 - ✅ **Fast downloads** - 7-24 Mbps through encrypted tunnel
 - ✅ **Low latency** - ~100ms overhead, great for browsing and YouTube
@@ -87,6 +88,70 @@ You should see:
 ✓ Connected to VPN server
 ✓ DNS configured: 1.1.1.1 (Cloudflare), 8.8.8.8 (Google) through VPN
 ✓ All traffic now routed through VPN
+```
+
+---
+
+## 🖥️ Menu Bar Application (macOS - Recommended)
+
+The easiest way to use Family VPN on macOS is with the **menu bar application** - a beautiful, native macOS app with one-click VPN toggle.
+
+### Features
+
+- 🔒/🔓 **One-click toggle** - Click menu bar icon to connect/disconnect instantly
+- 🚀 **Auto-start on login** - App launches automatically when you log in
+- ⚡ **Auto-connect** - VPN connects automatically 2 seconds after app launch
+- 📊 **Live monitoring** - Real-time connection status, IP address, duration
+- 🛡️ **Safe fallback** - If VPN fails to connect, routing is restored automatically
+- 💕 **Made with love** - Sweet personal message in "About"
+
+### Setup
+
+1. **Build everything** (VPN client + menu bar app):
+```bash
+./build-menubar.sh
+```
+
+2. **Run the menu bar app**:
+```bash
+cd menu-bar
+./family-vpn-menubar
+```
+
+You'll see a 🔓 icon in your menu bar. Click it to:
+- Connect/disconnect VPN with one click
+- See your current IP address and server location
+- Monitor connection duration
+- View connection stats
+
+3. **Install auto-launch** (start on login - RECOMMENDED):
+```bash
+cd menu-bar
+./install-autolaunch.sh
+```
+
+This makes the menu bar app:
+- ✅ Launch automatically when you log in
+- ✅ Auto-connect to VPN 2 seconds after launch
+- ✅ Always available in your menu bar
+
+### Usage
+
+**First time:**
+- When you click "Connect to VPN", macOS will prompt for your password
+- This is needed to create network interfaces and modify routing
+- Enter your password once, and the VPN will connect
+
+**After auto-launch is installed:**
+- App starts automatically when you log in
+- VPN connects automatically after 2 seconds
+- If connection fails, routing is safely restored (internet still works)
+- Click the 🔒 icon to disconnect or see connection details
+
+**To uninstall auto-launch:**
+```bash
+cd menu-bar
+./uninstall-autolaunch.sh
 ```
 
 ---

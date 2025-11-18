@@ -1,0 +1,39 @@
+#!/bin/bash
+
+# Family VPN - Menu Bar Application Builder
+# Builds both the VPN client and the menu bar application
+
+set -e
+
+echo "Family VPN - Menu Bar Application Builder"
+echo "=========================================="
+echo ""
+
+# Get the directory where this script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Build VPN client
+echo "Building VPN client..."
+cd "$SCRIPT_DIR/client"
+go build -o vpn-client main.go
+echo "✅ VPN client built successfully"
+echo ""
+
+# Build menu bar application
+echo "Building menu bar application..."
+cd "$SCRIPT_DIR/menu-bar"
+go build -o family-vpn-menubar main.go
+echo "✅ Menu bar application built successfully"
+echo ""
+
+echo "=========================================="
+echo "Build complete!"
+echo ""
+echo "To run the menu bar app:"
+echo "  cd menu-bar"
+echo "  ./family-vpn-menubar"
+echo ""
+echo "To install auto-launch (starts on login):"
+echo "  cd menu-bar"
+echo "  ./install-autolaunch.sh"
+echo ""
