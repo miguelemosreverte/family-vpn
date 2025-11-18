@@ -52,16 +52,21 @@ type VPNServer struct {
 	peers         map[string]*PeerInfo  // key: VPN IP address
 	peersMutex    sync.RWMutex
 	nextClientIP  int  // Counter for assigning IPs (10.8.0.2, 10.8.0.3, etc.)
+	// Peer-to-peer routing
+	peerConnections map[string]net.Conn // key: VPN IP address, value: client connection
+	peerEncryption  map[string]bool     // key: VPN IP address, value: wants encryption
 }
 
 func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
 	return &VPNServer{
-		listenAddr:   listenAddr,
-		encryption:   encryption,
-		key:          key,
-		clients:      make(map[net.Conn]bool),
-		peers:        make(map[string]*PeerInfo),
-		nextClientIP: 2, // Start from 10.8.0.2 (10.8.0.1 is server)
+		listenAddr:      listenAddr,
+		encryption:      encryption,
+		key:             key,
+		clients:         make(map[net.Conn]bool),
+		peers:           make(map[string]*PeerInfo),
+		peerConnections: make(map[string]net.Conn),
+		peerEncryption:  make(map[string]bool),
+		nextClientIP:    2, // Start from 10.8.0.2 (10.8.0.1 is server)
 	}
 }
 
@@ -181,8 +186,17 @@ func (s *VPNServer) decryptData(data []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
+// getDestinationIP extracts the destination IP from an IP packet
+func getDestinationIP(packet []byte) string {
+	if len(packet) < 20 {
+		return "" // Invalid IP packet
+	}
+	// IP header destination is at bytes 16-19
+	return fmt.Sprintf("%d.%d.%d.%d", packet[16], packet[17], packet[18], packet[19])
+}
+
 // registerPeer adds a new peer to the registry and broadcasts updated list
-func (s *VPNServer) registerPeer(vpnIP, hostname, publicIP, os string) {
+func (s *VPNServer) registerPeer(vpnIP, hostname, publicIP, os string, conn net.Conn, wantsEncryption bool) {
 	s.peersMutex.Lock()
 	s.peers[vpnIP] = &PeerInfo{
 		Hostname:    hostname,
@@ -191,6 +205,8 @@ func (s *VPNServer) registerPeer(vpnIP, hostname, publicIP, os string) {
 		ConnectedAt: time.Now().Format(time.RFC3339),
 		OS:          os,
 	}
+	s.peerConnections[vpnIP] = conn
+	s.peerEncryption[vpnIP] = wantsEncryption
 	s.peersMutex.Unlock()
 
 	log.Printf("[PEERS] Registered: %s (%s) at %s", hostname, os, vpnIP)
@@ -204,6 +220,8 @@ func (s *VPNServer) unregisterPeer(vpnIP string) {
 		log.Printf("[PEERS] Unregistered: %s at %s", peer.Hostname, vpnIP)
 		delete(s.peers, vpnIP)
 	}
+	delete(s.peerConnections, vpnIP)
+	delete(s.peerEncryption, vpnIP)
 	s.peersMutex.Unlock()
 
 	s.broadcastPeerList()
@@ -376,150 +394,14 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 	}
 
 	// Register peer in registry
-	s.registerPeer(assignedVPNIP, peerInfo.Hostname, publicIP, peerInfo.OS)
+	s.registerPeer(assignedVPNIP, peerInfo.Hostname, publicIP, peerInfo.OS, conn, clientWantsEncryption)
 	log.Printf("[PEERS] Assigned %s to %s (%s)", assignedVPNIP, peerInfo.Hostname, peerInfo.OS)
 
 	// Channel for graceful shutdown
 	done := make(chan bool)
 
-	// TUN -> Client (egress)
-	go func() {
-		buffer := make([]byte, MTU)
-		lengthBuf := make([]byte, 4) // Reuse length buffer
-		writer := bufio.NewWriterSize(conn, 131072) // 128KB buffer for downloads
-		var writerMutex sync.Mutex // Protect writer from concurrent access
-
-		// Diagnostics
-		var packetsSent, flushCount, totalBytesSent int64
-		var lastReport = time.Now()
-		// Timing breakdown (in microseconds)
-		var timeTunRead, timeEncrypt, timeMutexWait, timeNetWrite, timeFlush int64
-
-		// Background flusher: flush every 1ms for low latency while allowing batching
-		flushDone := make(chan bool)
-		go func() {
-			ticker := time.NewTicker(1 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					writerMutex.Lock()
-					buffered := writer.Buffered()
-					if buffered > 0 {
-						writer.Flush()
-						flushCount++
-					}
-					writerMutex.Unlock()
-				case <-flushDone:
-					return
-				}
-			}
-		}()
-		defer close(flushDone)
-
-		// Stats reporter
-		go func() {
-			ticker := time.NewTicker(5 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					elapsed := time.Since(lastReport).Seconds()
-					pps := float64(packetsSent) / elapsed
-					mbps := (float64(totalBytesSent) * 8) / (elapsed * 1000000)
-					avgBatch := float64(packetsSent) / float64(flushCount)
-					if flushCount == 0 {
-						avgBatch = 0
-					}
-					// Calculate average time per operation in microseconds
-					var avgTunRead, avgEncrypt, avgMutex, avgNetWrite, avgFlush float64
-					if packetsSent > 0 {
-						avgTunRead = float64(timeTunRead) / float64(packetsSent)
-						avgEncrypt = float64(timeEncrypt) / float64(packetsSent)
-						avgMutex = float64(timeMutexWait) / float64(packetsSent)
-						avgNetWrite = float64(timeNetWrite) / float64(packetsSent)
-						avgFlush = float64(timeFlush) / float64(packetsSent)
-					}
-					log.Printf("[SERVER-EGRESS] %.0f pkt/s, %.2f Mbps, %.1f pkt/flush", pps, mbps, avgBatch)
-					log.Printf("[TIMING] TUN:%.0fµs Encrypt:%.0fµs Mutex:%.0fµs NetWrite:%.0fµs Flush:%.0fµs",
-						avgTunRead, avgEncrypt, avgMutex, avgNetWrite, avgFlush)
-					packetsSent, totalBytesSent, flushCount = 0, 0, 0
-					timeTunRead, timeEncrypt, timeMutexWait, timeNetWrite, timeFlush = 0, 0, 0, 0, 0
-					lastReport = time.Now()
-				case <-done:
-					return
-				}
-			}
-		}()
-
-		for {
-			// Measure TUN read
-			t0 := time.Now()
-			n, err := s.tunIface.Read(buffer)
-			timeTunRead += time.Since(t0).Microseconds()
-			if err != nil {
-				log.Printf("TUN read error: %v", err)
-				done <- true
-				return
-			}
-
-			packet := buffer[:n]
-
-			// Measure encryption
-			t1 := time.Now()
-			var encrypted []byte
-			if clientWantsEncryption {
-				encrypted, err = s.encryptData(packet)
-				if err != nil {
-					log.Printf("Encryption error: %v", err)
-					continue
-				}
-			} else {
-				encrypted = packet
-			}
-			timeEncrypt += time.Since(t1).Microseconds()
-
-			// Send packet length first (4 bytes), then packet using buffered writer
-			binary.BigEndian.PutUint32(lengthBuf, uint32(len(encrypted)))
-
-			// Measure mutex wait time
-			t2 := time.Now()
-			writerMutex.Lock()
-			timeMutexWait += time.Since(t2).Microseconds()
-
-			// Measure network writes
-			t3 := time.Now()
-			if _, err := writer.Write(lengthBuf); err != nil {
-				writerMutex.Unlock()
-				log.Printf("Failed to send length: %v", err)
-				done <- true
-				return
-			}
-			if _, err := writer.Write(encrypted); err != nil {
-				writerMutex.Unlock()
-				log.Printf("Failed to send packet: %v", err)
-				done <- true
-				return
-			}
-			timeNetWrite += time.Since(t3).Microseconds()
-
-			// Flush immediately if buffer reaches 4KB to minimize latency during TCP slow start
-			// This prevents micro-bursts that confuse TCP congestion control
-			// During high throughput, periodic flusher (1ms) handles bulk traffic efficiently
-			if writer.Buffered() >= 4096 {
-				t4 := time.Now()
-				writer.Flush()
-				timeFlush += time.Since(t4).Microseconds()
-				flushCount++
-			}
-			writerMutex.Unlock()
-
-			// Update stats
-			packetsSent++
-			totalBytesSent += int64(len(encrypted))
-			// Note: Periodic flusher handles remaining small batches
-		}
-	}()
+	// Note: TUN -> Client (egress) is now handled by centralized router (startTUNRouter)
+	// This allows proper peer-to-peer packet forwarding based on destination IP
 
 	// Client -> TUN (ingress)
 	go func() {
@@ -621,10 +503,78 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 	log.Printf("Client %s disconnected", conn.RemoteAddr())
 }
 
+// startTUNRouter starts the centralized TUN packet router
+// This goroutine reads all packets from TUN and routes them to the correct peer
+func (s *VPNServer) startTUNRouter() {
+	go func() {
+		buffer := make([]byte, MTU)
+		log.Printf("[ROUTER] Starting centralized TUN packet router")
+
+		for {
+			// Read packet from TUN device
+			n, err := s.tunIface.Read(buffer)
+			if err != nil {
+				log.Printf("[ROUTER] TUN read error: %v", err)
+				continue
+			}
+
+			packet := make([]byte, n)
+			copy(packet, buffer[:n])
+
+			// Parse destination IP from packet
+			destIP := getDestinationIP(packet)
+			if destIP == "" {
+				log.Printf("[ROUTER] Invalid IP packet, skipping")
+				continue
+			}
+
+			// Look up which peer owns this destination IP
+			s.peersMutex.RLock()
+			targetConn, connExists := s.peerConnections[destIP]
+			wantsEncryption, encryptExists := s.peerEncryption[destIP]
+			s.peersMutex.RUnlock()
+
+			if !connExists || !encryptExists {
+				// Destination is not a connected peer, skip
+				// (might be Internet-bound traffic, which is handled elsewhere)
+				continue
+			}
+
+			// Encrypt if needed
+			var toSend []byte
+			if wantsEncryption {
+				encrypted, err := s.encryptData(packet)
+				if err != nil {
+					log.Printf("[ROUTER] Encryption error for %s: %v", destIP, err)
+					continue
+				}
+				toSend = encrypted
+			} else {
+				toSend = packet
+			}
+
+			// Send packet length (4 bytes) + packet to target peer
+			lengthBuf := make([]byte, 4)
+			binary.BigEndian.PutUint32(lengthBuf, uint32(len(toSend)))
+
+			// Write to connection (errors are expected if peer disconnects)
+			if _, err := targetConn.Write(lengthBuf); err != nil {
+				continue
+			}
+			if _, err := targetConn.Write(toSend); err != nil {
+				continue
+			}
+		}
+	}()
+}
+
 func (s *VPNServer) Start() error {
 	if err := s.setupTUN(); err != nil {
 		return err
 	}
+
+	// Start centralized TUN router for peer-to-peer traffic
+	s.startTUNRouter()
 
 	var listener net.Listener
 	var err error
