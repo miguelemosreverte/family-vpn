@@ -4,6 +4,9 @@
 # Binaries
 client/vpn-client
 server/vpn-server
+menu-bar/family-vpn-manager
+menu-bar/family-vpn-menubar
+vpn-server
 *.prof
 
 # Logs
