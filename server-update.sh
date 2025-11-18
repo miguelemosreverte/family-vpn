@@ -21,6 +21,13 @@ cd "$REPO_DIR"
 echo "📥 Pulling latest code from GitHub..."
 git pull origin main
 
+# Generate TLS certificates if they don't exist
+if [ ! -f "$REPO_DIR/certs/server.crt" ] || [ ! -f "$REPO_DIR/certs/server.key" ]; then
+    echo "🔐 Generating TLS certificates..."
+    cd "$REPO_DIR"
+    ./generate-certs.sh
+fi
+
 # Rebuild server binary
 echo "🔨 Building server..."
 cd "$REPO_DIR/server"
@@ -44,10 +51,10 @@ if [ -f "$PID_FILE" ]; then
     fi
 fi
 
-# Start new server in background
-echo "🚀 Starting new server..."
+# Start new server in background with TLS on port 443
+echo "🚀 Starting new server with TLS on port 443..."
 cd "$REPO_DIR"
-nohup "$SERVER_BINARY" -port 8888 -webhook-port 9000 > /var/log/vpn-server.log 2>&1 &
+nohup "$SERVER_BINARY" -port 443 -webhook-port 9000 -tls -tls-cert certs/server.crt -tls-key certs/server.key > /var/log/vpn-server.log 2>&1 &
 NEW_PID=$!
 
 # Save new PID
