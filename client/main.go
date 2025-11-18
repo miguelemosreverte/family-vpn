@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/binary"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -26,23 +28,34 @@ import (
 )
 
 const (
-	MTU         = 1400  // Reduced to account for encryption overhead (GCM adds ~28 bytes)
-	TUN_DEVICE  = "tun0"
-	CLIENT_IP   = "10.8.0.2"
-	SERVER_IP   = "10.8.0.1"
+	MTU        = 1400 // Reduced to account for encryption overhead (GCM adds ~28 bytes)
+	TUN_DEVICE = "tun0"
+	SERVER_IP  = "10.8.0.1"
 )
 
+// PeerInfo represents a connected VPN peer
+type PeerInfo struct {
+	Hostname    string `json:"hostname"`
+	VPNAddress  string `json:"vpn_address"`
+	PublicIP    string `json:"public_ip"`
+	ConnectedAt string `json:"connected_at"`
+	OS          string `json:"os"`
+}
+
 type VPNClient struct {
-	serverAddr string
-	encryption bool
-	key        []byte
-	tunIface   *water.Interface
-	conn       net.Conn
-	enabled    bool
-	originalGW string
-	tunName    string
-	noTimeout  bool  // If true, run indefinitely (for production use)
-	useTLS     bool  // If true, use TLS to look like HTTPS
+	serverAddr   string
+	encryption   bool
+	key          []byte
+	tunIface     *water.Interface
+	conn         net.Conn
+	enabled      bool
+	originalGW   string
+	tunName      string
+	noTimeout    bool // If true, run indefinitely (for production use)
+	useTLS       bool // If true, use TLS to look like HTTPS
+	assignedIP   string // VPN IP assigned by server
+	peers        []*PeerInfo // List of connected peers
+	peersMutex   sync.RWMutex
 }
 
 func NewVPNClient(serverAddr string, encryption bool, key []byte, noTimeout bool, useTLS bool) *VPNClient {
@@ -83,16 +96,22 @@ func (c *VPNClient) setupTUN() error {
 
 	log.Printf("Created TUN device: %s", c.tunName)
 
+	// Use assigned IP from server
+	clientIP := c.assignedIP
+	if clientIP == "" {
+		return fmt.Errorf("no VPN IP assigned by server")
+	}
+
 	// Configure IP address based on OS
 	if runtime.GOOS == "darwin" {
 		// macOS uses ifconfig
-		cmd := exec.Command("ifconfig", c.tunName, CLIENT_IP, SERVER_IP, "up")
+		cmd := exec.Command("ifconfig", c.tunName, clientIP, SERVER_IP, "up")
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to configure %s: %v", c.tunName, err)
 		}
 	} else {
 		// Linux uses ip command
-		cmd := exec.Command("ip", "addr", "add", CLIENT_IP+"/24", "dev", c.tunName)
+		cmd := exec.Command("ip", "addr", "add", clientIP+"/24", "dev", c.tunName)
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to assign IP: %v", err)
 		}
@@ -103,7 +122,7 @@ func (c *VPNClient) setupTUN() error {
 		}
 	}
 
-	log.Printf("TUN device %s configured with IP %s", c.tunName, CLIENT_IP)
+	log.Printf("TUN device %s configured with IP %s", c.tunName, clientIP)
 	return nil
 }
 
@@ -362,7 +381,45 @@ func (c *VPNClient) Connect() error {
 	}
 	log.Printf("Encryption: %v", c.encryption)
 
-	// Setup TUN
+	// Send peer info to server
+	hostname, _ := os.Hostname()
+	if hostname == "" {
+		hostname = "Unknown"
+	}
+	peerInfo := &PeerInfo{
+		Hostname: hostname,
+		OS:       runtime.GOOS,
+	}
+	peerInfoJSON, err := json.Marshal(peerInfo)
+	if err != nil {
+		return fmt.Errorf("failed to marshal peer info: %v", err)
+	}
+
+	// Send peer info length + data
+	peerInfoLen := make([]byte, 4)
+	binary.BigEndian.PutUint32(peerInfoLen, uint32(len(peerInfoJSON)))
+	if _, err := conn.Write(peerInfoLen); err != nil {
+		return fmt.Errorf("failed to send peer info length: %v", err)
+	}
+	if _, err := conn.Write(peerInfoJSON); err != nil {
+		return fmt.Errorf("failed to send peer info: %v", err)
+	}
+
+	// Receive assigned VPN IP from server
+	vpnIPLenBuf := make([]byte, 4)
+	if _, err := io.ReadFull(conn, vpnIPLenBuf); err != nil {
+		return fmt.Errorf("failed to read VPN IP length: %v", err)
+	}
+	vpnIPLen := binary.BigEndian.Uint32(vpnIPLenBuf)
+
+	vpnIPBuf := make([]byte, vpnIPLen)
+	if _, err := io.ReadFull(conn, vpnIPBuf); err != nil {
+		return fmt.Errorf("failed to read VPN IP: %v", err)
+	}
+	c.assignedIP = string(vpnIPBuf)
+	log.Printf("[PEERS] Assigned VPN IP: %s", c.assignedIP)
+
+	// Setup TUN with assigned IP
 	if err := c.setupTUN(); err != nil {
 		return err
 	}
@@ -620,6 +677,30 @@ func (c *VPNClient) Connect() error {
 
 func (c *VPNClient) handleControlMessage(message []byte) {
 	command := string(message)
+
+	// Check if this is a PEER_LIST message
+	if strings.HasPrefix(command, "PEER_LIST:") {
+		peerListJSON := command[10:] // Skip "PEER_LIST:" prefix
+		var peerList []*PeerInfo
+		if err := json.Unmarshal([]byte(peerListJSON), &peerList); err != nil {
+			log.Printf("[PEERS] Failed to parse peer list: %v", err)
+			return
+		}
+
+		c.peersMutex.Lock()
+		c.peers = peerList
+		c.peersMutex.Unlock()
+
+		log.Printf("[PEERS] Updated peer list: %d peers connected", len(peerList))
+		for _, peer := range peerList {
+			log.Printf("[PEERS]   - %s (%s) at %s", peer.Hostname, peer.OS, peer.VPNAddress)
+		}
+
+		// Write peer list to file for menu bar app
+		c.writePeerListToFile()
+		return
+	}
+
 	log.Printf("[CONTROL] Received: %s", command)
 
 	switch command {
@@ -639,6 +720,32 @@ func (c *VPNClient) handleControlMessage(message []byte) {
 		}
 	default:
 		log.Printf("[CONTROL] Unknown command: %s", command)
+	}
+}
+
+// writePeerListToFile writes the peer list to a file for the menu bar app
+func (c *VPNClient) writePeerListToFile() {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("[PEERS] Failed to get home dir: %v", err)
+		return
+	}
+
+	peerFile := filepath.Join(homeDir, ".family-vpn-peers.json")
+
+	c.peersMutex.RLock()
+	peerJSON, err := json.MarshalIndent(c.peers, "", "  ")
+	c.peersMutex.RUnlock()
+
+	if err != nil {
+		log.Printf("[PEERS] Failed to marshal peer list: %v", err)
+		return
+	}
+
+	if err := os.WriteFile(peerFile, peerJSON, 0644); err != nil {
+		log.Printf("[PEERS] Failed to write peer file: %v", err)
+	} else {
+		log.Printf("[PEERS] Wrote peer list to %s", peerFile)
 	}
 }
 

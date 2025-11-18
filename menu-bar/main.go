@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -27,6 +28,15 @@ type VPNState struct {
 	Process       *exec.Cmd
 }
 
+// PeerInfo represents a connected VPN peer
+type PeerInfo struct {
+	Hostname    string `json:"hostname"`
+	VPNAddress  string `json:"vpn_address"`
+	PublicIP    string `json:"public_ip"`
+	ConnectedAt string `json:"connected_at"`
+	OS          string `json:"os"`
+}
+
 var (
 	vpnState = &VPNState{Connected: false}
 	mStatus  *systray.MenuItem
@@ -42,6 +52,10 @@ var (
 
 	// Development mode - disables auto-connect
 	devMode bool
+
+	// Peer list
+	connectedPeers []*PeerInfo
+	peerMenuItems  map[string]*systray.MenuItem // Map peer VPN address to menu item
 )
 
 // getEnv reads an environment variable or returns a default value
@@ -282,6 +296,15 @@ func onReady() {
 
 	systray.AddSeparator()
 
+	// Connected Family section (will be populated dynamically)
+	mFamilyHeader := systray.AddMenuItem("👨‍👩‍👧‍👦 Connected Family", "Family members on VPN")
+	mFamilyHeader.Disable()
+
+	// Initialize peer menu items map
+	peerMenuItems = make(map[string]*systray.MenuItem)
+
+	systray.AddSeparator()
+
 	// About and Quit
 	mAbout := systray.AddMenuItem("About", "About this VPN")
 
@@ -290,6 +313,9 @@ func onReady() {
 
 	// Start data updater
 	go dataUpdater()
+
+	// Start peer list updater
+	go peerListUpdater()
 
 	// Auto-connect on startup (unless in dev mode)
 	if !devMode {
@@ -781,6 +807,109 @@ func getDisconnectedIcon() []byte {
 		0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
 		0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
 		0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+	}
+}
+
+// peerListUpdater periodically reads the peer list file
+func peerListUpdater() {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if !vpnState.Connected {
+			// Clear peers when disconnected
+			if len(connectedPeers) > 0 {
+				connectedPeers = nil
+				updatePeerMenu()
+			}
+			continue
+		}
+
+		// Read peer list from file
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			continue
+		}
+
+		peerFile := filepath.Join(homeDir, ".family-vpn-peers.json")
+		data, err := os.ReadFile(peerFile)
+		if err != nil {
+			// File might not exist yet
+			continue
+		}
+
+		var peers []*PeerInfo
+		if err := json.Unmarshal(data, &peers); err != nil {
+			log.Printf("Failed to parse peer list: %v", err)
+			continue
+		}
+
+		// Update if changed
+		if !peersEqual(connectedPeers, peers) {
+			connectedPeers = peers
+			updatePeerMenu()
+		}
+	}
+}
+
+// peersEqual checks if two peer lists are equal
+func peersEqual(a, b []*PeerInfo) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].VPNAddress != b[i].VPNAddress || a[i].Hostname != b[i].Hostname {
+			return false
+		}
+	}
+	return true
+}
+
+// updatePeerMenu updates the peer menu items
+func updatePeerMenu() {
+	// Remove all existing peer menu items
+	for _, item := range peerMenuItems {
+		item.Hide()
+	}
+	peerMenuItems = make(map[string]*systray.MenuItem)
+
+	// Add new peer menu items
+	for _, peer := range connectedPeers {
+		// Create menu item: "🖥️  MacBook-Air (10.8.0.2) - Click to remote access"
+		label := fmt.Sprintf("🖥️  %s (%s)", peer.Hostname, peer.VPNAddress)
+		tooltip := fmt.Sprintf("Click to remote access %s at %s", peer.Hostname, peer.VPNAddress)
+
+		item := systray.AddMenuItem(label, tooltip)
+		peerMenuItems[peer.VPNAddress] = item
+
+		// Start click handler for this peer
+		go handlePeerClick(item, peer)
+	}
+
+	log.Printf("Updated peer menu: %d peers", len(connectedPeers))
+}
+
+// handlePeerClick handles clicks on peer menu items
+func handlePeerClick(item *systray.MenuItem, peer *PeerInfo) {
+	for {
+		<-item.ClickedCh
+		log.Printf("Opening remote access to %s (%s)", peer.Hostname, peer.VPNAddress)
+		openRemoteAccess(peer.VPNAddress)
+	}
+}
+
+// openRemoteAccess opens macOS Screen Sharing to the specified IP
+func openRemoteAccess(vpnIP string) {
+	// Use macOS Screen Sharing URL scheme
+	// vnc://username@hostname or vnc://ip-address
+	url := fmt.Sprintf("vnc://%s", vpnIP)
+
+	cmd := exec.Command("open", url)
+	if err := cmd.Start(); err != nil {
+		log.Printf("Failed to open Screen Sharing: %v", err)
+		dialog.Message("Failed to open Screen Sharing to %s\n\nError: %v", vpnIP, err).Title("Remote Access Error").Error()
+	} else {
+		log.Printf("Opened Screen Sharing to %s", vpnIP)
 	}
 }
 

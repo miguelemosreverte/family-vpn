@@ -56,10 +56,12 @@ type VPNServer struct {
 
 func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
 	return &VPNServer{
-		listenAddr: listenAddr,
-		encryption: encryption,
-		key:        key,
-		clients:    make(map[net.Conn]bool),
+		listenAddr:   listenAddr,
+		encryption:   encryption,
+		key:          key,
+		clients:      make(map[net.Conn]bool),
+		peers:        make(map[string]*PeerInfo),
+		nextClientIP: 2, // Start from 10.8.0.2 (10.8.0.1 is server)
 	}
 }
 
@@ -179,6 +181,54 @@ func (s *VPNServer) decryptData(data []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
+// registerPeer adds a new peer to the registry and broadcasts updated list
+func (s *VPNServer) registerPeer(vpnIP, hostname, publicIP, os string) {
+	s.peersMutex.Lock()
+	s.peers[vpnIP] = &PeerInfo{
+		Hostname:    hostname,
+		VPNAddress:  vpnIP,
+		PublicIP:    publicIP,
+		ConnectedAt: time.Now().Format(time.RFC3339),
+		OS:          os,
+	}
+	s.peersMutex.Unlock()
+
+	log.Printf("[PEERS] Registered: %s (%s) at %s", hostname, os, vpnIP)
+	s.broadcastPeerList()
+}
+
+// unregisterPeer removes a peer and broadcasts updated list
+func (s *VPNServer) unregisterPeer(vpnIP string) {
+	s.peersMutex.Lock()
+	if peer, exists := s.peers[vpnIP]; exists {
+		log.Printf("[PEERS] Unregistered: %s at %s", peer.Hostname, vpnIP)
+		delete(s.peers, vpnIP)
+	}
+	s.peersMutex.Unlock()
+
+	s.broadcastPeerList()
+}
+
+// broadcastPeerList sends current peer list to all clients
+func (s *VPNServer) broadcastPeerList() {
+	s.peersMutex.RLock()
+	peerList := make([]*PeerInfo, 0, len(s.peers))
+	for _, peer := range s.peers {
+		peerList = append(peerList, peer)
+	}
+	s.peersMutex.RUnlock()
+
+	peerJSON, err := json.Marshal(peerList)
+	if err != nil {
+		log.Printf("[PEERS] Failed to marshal peer list: %v", err)
+		return
+	}
+
+	command := "PEER_LIST:" + string(peerJSON)
+	s.broadcastControlMessage(command)
+	log.Printf("[PEERS] Broadcasted peer list to all clients (%d peers)", len(peerList))
+}
+
 // broadcastControlMessage sends a control message to all connected clients
 func (s *VPNServer) broadcastControlMessage(command string) {
 	s.clientsMutex.RLock()
@@ -223,19 +273,27 @@ func (s *VPNServer) broadcastControlMessage(command string) {
 
 func (s *VPNServer) handleClient(conn net.Conn) {
 	defer conn.Close()
-	log.Printf("Client connected from %s", conn.RemoteAddr())
 
-	// Register client
+	publicIP := conn.RemoteAddr().(*net.TCPAddr).IP.String()
+	log.Printf("Client connected from %s", publicIP)
+
+	// Register client connection
 	s.clientsMutex.Lock()
 	s.clients[conn] = true
 	s.clientsMutex.Unlock()
+
+	var assignedVPNIP string
 
 	// Unregister client on disconnect
 	defer func() {
 		s.clientsMutex.Lock()
 		delete(s.clients, conn)
 		s.clientsMutex.Unlock()
-		log.Printf("Client disconnected: %s", conn.RemoteAddr())
+
+		if assignedVPNIP != "" {
+			s.unregisterPeer(assignedVPNIP)
+		}
+		log.Printf("Client disconnected: %s", publicIP)
 	}()
 
 	// Tune TCP socket for high throughput
@@ -254,6 +312,50 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 	}
 	clientWantsEncryption := encryptByte[0] == 1
 	log.Printf("Client encryption preference: %v", clientWantsEncryption)
+
+	// Read peer info length (4 bytes)
+	peerInfoLenBuf := make([]byte, 4)
+	if _, err := io.ReadFull(conn, peerInfoLenBuf); err != nil {
+		log.Printf("Failed to read peer info length: %v", err)
+		return
+	}
+	peerInfoLen := binary.BigEndian.Uint32(peerInfoLenBuf)
+
+	// Read peer info JSON
+	peerInfoBuf := make([]byte, peerInfoLen)
+	if _, err := io.ReadFull(conn, peerInfoBuf); err != nil {
+		log.Printf("Failed to read peer info: %v", err)
+		return
+	}
+
+	var peerInfo PeerInfo
+	if err := json.Unmarshal(peerInfoBuf, &peerInfo); err != nil {
+		log.Printf("Failed to parse peer info: %v", err)
+		return
+	}
+
+	// Assign VPN IP address
+	s.peersMutex.Lock()
+	assignedVPNIP = fmt.Sprintf("10.8.0.%d", s.nextClientIP)
+	s.nextClientIP++
+	s.peersMutex.Unlock()
+
+	// Send assigned VPN IP back to client
+	vpnIPBytes := []byte(assignedVPNIP)
+	vpnIPLen := make([]byte, 4)
+	binary.BigEndian.PutUint32(vpnIPLen, uint32(len(vpnIPBytes)))
+	if _, err := conn.Write(vpnIPLen); err != nil {
+		log.Printf("Failed to send VPN IP length: %v", err)
+		return
+	}
+	if _, err := conn.Write(vpnIPBytes); err != nil {
+		log.Printf("Failed to send VPN IP: %v", err)
+		return
+	}
+
+	// Register peer in registry
+	s.registerPeer(assignedVPNIP, peerInfo.Hostname, publicIP, peerInfo.OS)
+	log.Printf("[PEERS] Assigned %s to %s (%s)", assignedVPNIP, peerInfo.Hostname, peerInfo.OS)
 
 	// Channel for graceful shutdown
 	done := make(chan bool)
