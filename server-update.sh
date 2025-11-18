@@ -51,10 +51,10 @@ if [ -f "$PID_FILE" ]; then
     fi
 fi
 
-# Start new server in background with TLS on port 443 (running as root, so we can bind to privileged ports)
-echo "🚀 Starting new server with TLS on port 443..."
+# Start new server in background on port 8888 (working configuration)
+echo "🚀 Starting server on port 8888..."
 cd "$REPO_DIR"
-nohup "$SERVER_BINARY" -port 443 -webhook-port 9000 -tls -tls-cert certs/server.crt -tls-key certs/server.key > /var/log/vpn-server.log 2>&1 &
+nohup "$SERVER_BINARY" -port 8888 -webhook-port 9000 > /var/log/vpn-server.log 2>&1 &
 NEW_PID=$!
 
 # Save new PID
