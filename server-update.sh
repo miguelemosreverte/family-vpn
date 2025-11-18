@@ -51,10 +51,27 @@ if [ -f "$PID_FILE" ]; then
     fi
 fi
 
-# Start new server in background with TLS on port 443
-echo "🚀 Starting new server with TLS on port 443..."
+# Set up port forwarding 443→8888 (if not already set up)
+echo "🔀 Setting up port forwarding 443→8888..."
+if ! iptables -t nat -L PREROUTING -n | grep -q 'tcp dpt:443'; then
+    # Enable IP forwarding
+    echo 1 > /proc/sys/net/ipv4/ip_forward
+
+    # Add PREROUTING rule to redirect 443→8888
+    iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 8888
+
+    # Allow port 8888 in firewall
+    iptables -I INPUT -p tcp --dport 8888 -j ACCEPT || true
+
+    echo "✅ Port forwarding configured: external 443 → internal 8888"
+else
+    echo "✅ Port forwarding already configured"
+fi
+
+# Start new server in background with TLS on port 8888 (externally accessible via 443)
+echo "🚀 Starting new server with TLS on port 8888 (forwarded from 443)..."
 cd "$REPO_DIR"
-nohup "$SERVER_BINARY" -port 443 -webhook-port 9000 -tls -tls-cert certs/server.crt -tls-key certs/server.key > /var/log/vpn-server.log 2>&1 &
+nohup "$SERVER_BINARY" -port 8888 -webhook-port 9000 -tls -tls-cert certs/server.crt -tls-key certs/server.key > /var/log/vpn-server.log 2>&1 &
 NEW_PID=$!
 
 # Save new PID

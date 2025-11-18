@@ -375,7 +375,7 @@ func connectVPN() {
 
 	// Spawn VPN client with sudo using the password
 	serverAddr := fmt.Sprintf("%s:%s", vpnServerHost, vpnServerPort)
-	cmd := exec.Command("sudo", "-S", vpnClientPath, "-server", serverAddr, "-encrypt", "-tls", "--no-timeout")
+	cmd := exec.Command("sudo", "-S", vpnClientPath, "-server", serverAddr, "-encrypt", "-tls=false", "--no-timeout")
 
 	// Pass password to sudo via stdin
 	stdin, err := cmd.StdinPipe()
