@@ -30,6 +30,15 @@ const (
 	SERVER_IP   = "10.8.0.1"
 )
 
+// PeerInfo represents a connected VPN client
+type PeerInfo struct {
+	Hostname   string `json:"hostname"`
+	VPNAddress string `json:"vpn_address"`
+	PublicIP   string `json:"public_ip"`
+	ConnectedAt string `json:"connected_at"`
+	OS         string `json:"os"`
+}
+
 type VPNServer struct {
 	listenAddr   string
 	encryption   bool
@@ -39,6 +48,10 @@ type VPNServer struct {
 	clientsMutex sync.RWMutex
 	tlsConfig    *tls.Config
 	useTLS       bool
+	// Peer registry for remote access
+	peers         map[string]*PeerInfo  // key: VPN IP address
+	peersMutex    sync.RWMutex
+	nextClientIP  int  // Counter for assigning IPs (10.8.0.2, 10.8.0.3, etc.)
 }
 
 func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
