@@ -5,6 +5,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/binary"
 	"flag"
 	"fmt"
@@ -41,15 +42,17 @@ type VPNClient struct {
 	originalGW string
 	tunName    string
 	noTimeout  bool  // If true, run indefinitely (for production use)
+	useTLS     bool  // If true, use TLS to look like HTTPS
 }
 
-func NewVPNClient(serverAddr string, encryption bool, key []byte, noTimeout bool) *VPNClient {
+func NewVPNClient(serverAddr string, encryption bool, key []byte, noTimeout bool, useTLS bool) *VPNClient {
 	return &VPNClient{
 		serverAddr: serverAddr,
 		encryption: encryption,
 		key:        key,
 		enabled:    false,
 		noTimeout:  noTimeout,
+		useTLS:     useTLS,
 	}
 }
 
@@ -308,14 +311,39 @@ func (c *VPNClient) decrypt(data []byte) ([]byte, error) {
 }
 
 func (c *VPNClient) Connect() error {
-	// Connect to server
-	conn, err := net.Dial("tcp", c.serverAddr)
-	if err != nil {
-		return fmt.Errorf("failed to connect to server: %v", err)
+	var conn net.Conn
+	var err error
+
+	// Connect to server with or without TLS
+	if c.useTLS {
+		// Use TLS to look like HTTPS traffic
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: true, // Skip cert verification for self-signed certs
+		}
+		conn, err = tls.Dial("tcp", c.serverAddr, tlsConfig)
+		if err != nil {
+			return fmt.Errorf("failed to connect to server with TLS: %v", err)
+		}
+		log.Printf("Connected to VPN server at %s with TLS (looks like HTTPS!)", c.serverAddr)
+	} else {
+		// Plain TCP connection
+		conn, err = net.Dial("tcp", c.serverAddr)
+		if err != nil {
+			return fmt.Errorf("failed to connect to server: %v", err)
+		}
+		log.Printf("Connected to VPN server at %s", c.serverAddr)
 	}
 
 	// Tune TCP socket for high throughput
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
+	if tlsConn, ok := conn.(*tls.Conn); ok {
+		// For TLS connections, get underlying TCP connection
+		if tcpConn, ok := tlsConn.NetConn().(*net.TCPConn); ok {
+			tcpConn.SetReadBuffer(1024 * 1024)  // 1MB receive buffer
+			tcpConn.SetWriteBuffer(1024 * 1024) // 1MB send buffer
+			tcpConn.SetNoDelay(true)            // Disable Nagle's algorithm for low latency
+			log.Printf("TCP socket tuned: 1MB buffers, NoDelay enabled")
+		}
+	} else if tcpConn, ok := conn.(*net.TCPConn); ok {
 		tcpConn.SetReadBuffer(1024 * 1024)  // 1MB receive buffer
 		tcpConn.SetWriteBuffer(1024 * 1024) // 1MB send buffer
 		tcpConn.SetNoDelay(true)            // Disable Nagle's algorithm for low latency
@@ -323,7 +351,6 @@ func (c *VPNClient) Connect() error {
 	}
 
 	c.conn = conn
-	log.Printf("Connected to VPN server at %s", c.serverAddr)
 
 	// Send encryption preference to server
 	encryptByte := byte(0)
@@ -635,8 +662,9 @@ func (c *VPNClient) Disconnect() error {
 }
 
 func main() {
-	server := flag.String("server", "", "VPN server address (e.g., 95.217.238.72:8888)")
+	server := flag.String("server", "", "VPN server address (e.g., 95.217.238.72:443)")
 	encrypt := flag.Bool("encrypt", false, "Enable encryption")
+	useTLS := flag.Bool("tls", true, "Use TLS to look like HTTPS (default true)")
 	cpuprofile := flag.String("cpuprofile", "", "Write CPU profile to file")
 	noTimeout := flag.Bool("no-timeout", false, "Run indefinitely (default: 60s timeout for safety)")
 	flag.Parse()
@@ -662,7 +690,7 @@ func main() {
 	// Use same key as server (in production, use proper key exchange)
 	key := []byte("0123456789abcdef0123456789abcdef") // 32 bytes for AES-256
 
-	client := NewVPNClient(*server, *encrypt, key, *noTimeout)
+	client := NewVPNClient(*server, *encrypt, key, *noTimeout, *useTLS)
 	if err := client.Connect(); err != nil {
 		log.Fatal(err)
 	}

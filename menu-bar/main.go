@@ -38,7 +38,7 @@ var (
 
 	// VPN Configuration - read from environment or use defaults
 	vpnServerHost = getEnv("VPN_SERVER_HOST", "95.217.238.72") // Default server from family-vpn
-	vpnServerPort = getEnv("VPN_SERVER_PORT", "8888")
+	vpnServerPort = getEnv("VPN_SERVER_PORT", "443") // Port 443 for HTTPS stealth
 
 	// Development mode - disables auto-connect
 	devMode bool
@@ -375,7 +375,7 @@ func connectVPN() {
 
 	// Spawn VPN client with sudo using the password
 	serverAddr := fmt.Sprintf("%s:%s", vpnServerHost, vpnServerPort)
-	cmd := exec.Command("sudo", "-S", vpnClientPath, "-server", serverAddr, "-encrypt", "--no-timeout")
+	cmd := exec.Command("sudo", "-S", vpnClientPath, "-server", serverAddr, "-encrypt", "-tls", "--no-timeout")
 
 	// Pass password to sudo via stdin
 	stdin, err := cmd.StdinPipe()

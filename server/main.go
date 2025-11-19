@@ -5,6 +5,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
 	"flag"
@@ -36,6 +37,8 @@ type VPNServer struct {
 	tunIface     *water.Interface
 	clients      map[net.Conn]bool
 	clientsMutex sync.RWMutex
+	tlsConfig    *tls.Config
+	useTLS       bool
 }
 
 func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
@@ -486,13 +489,25 @@ func (s *VPNServer) Start() error {
 		return err
 	}
 
-	listener, err := net.Listen("tcp", s.listenAddr)
-	if err != nil {
-		return fmt.Errorf("failed to listen: %v", err)
+	var listener net.Listener
+	var err error
+
+	if s.useTLS {
+		// Use TLS listener to look like HTTPS traffic
+		listener, err = tls.Listen("tcp", s.listenAddr, s.tlsConfig)
+		if err != nil {
+			return fmt.Errorf("failed to listen with TLS: %v", err)
+		}
+		log.Printf("VPN server listening on %s with TLS (looks like HTTPS!) (encryption: %v)", s.listenAddr, s.encryption)
+	} else {
+		// Plain TCP listener
+		listener, err = net.Listen("tcp", s.listenAddr)
+		if err != nil {
+			return fmt.Errorf("failed to listen: %v", err)
+		}
+		log.Printf("VPN server listening on %s (encryption: %v)", s.listenAddr, s.encryption)
 	}
 	defer listener.Close()
-
-	log.Printf("VPN server listening on %s (encryption: %v)", s.listenAddr, s.encryption)
 
 	for {
 		conn, err := listener.Accept()
@@ -578,8 +593,11 @@ func updateInitHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	port := flag.String("port", "8888", "Port to listen on")
+	port := flag.String("port", "443", "Port to listen on (default 443 for HTTPS stealth)")
 	webhookPort := flag.String("webhook-port", "9000", "Port for GitHub webhook server")
+	tlsCert := flag.String("tls-cert", "certs/server.crt", "Path to TLS certificate")
+	tlsKey := flag.String("tls-key", "certs/server.key", "Path to TLS private key")
+	useTLS := flag.Bool("tls", true, "Use TLS to look like HTTPS (default true)")
 	cpuprofile := flag.String("cpuprofile", "", "Write CPU profile to file")
 	flag.Parse()
 
@@ -601,6 +619,21 @@ func main() {
 	key := []byte("0123456789abcdef0123456789abcdef") // 32 bytes for AES-256
 
 	server := NewVPNServer(":"+*port, false, key)
+
+	// Load TLS certificates if TLS is enabled
+	if *useTLS {
+		cert, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
+		if err != nil {
+			log.Fatalf("Failed to load TLS certificates: %v", err)
+		}
+		server.tlsConfig = &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		}
+		server.useTLS = true
+		log.Printf("TLS enabled: cert=%s, key=%s", *tlsCert, *tlsKey)
+	}
+
 	globalServer = server
 
 	// Start HTTP server for webhooks and update endpoint
