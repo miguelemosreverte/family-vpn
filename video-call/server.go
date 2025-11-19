@@ -88,6 +88,8 @@ func (s *VideoServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[VIDEO] Browser WebSocket connected from %s", r.RemoteAddr)
 
+	var registeredPeerIP string
+
 	// Read messages from browser and forward to peer over VPN
 	for {
 		messageType, data, err := conn.ReadMessage()
@@ -109,6 +111,13 @@ func (s *VideoServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// Register this WebSocket connection for incoming messages from this peer
+		if registeredPeerIP == "" {
+			registeredPeerIP = peerIP
+			s.RegisterPeer(peerIP, conn)
+			log.Printf("[VIDEO] Registered WebSocket for peer %s", peerIP)
+		}
+
 		msgType, _ := msg["type"].(string)
 
 		switch msgType {
@@ -122,6 +131,14 @@ func (s *VideoServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		default:
 			log.Printf("[VIDEO] Unknown message type: %s (messageType=%d)", msgType, messageType)
 		}
+	}
+
+	// Unregister on disconnect
+	if registeredPeerIP != "" {
+		s.peersMutex.Lock()
+		delete(s.peers, registeredPeerIP)
+		s.peersMutex.Unlock()
+		log.Printf("[VIDEO] Unregistered WebSocket for peer %s", registeredPeerIP)
 	}
 }
 
