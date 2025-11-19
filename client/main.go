@@ -433,6 +433,12 @@ func (c *VPNClient) Connect() error {
 	c.enabled = true
 	done := make(chan bool)
 
+	// Start IPC server for extensions
+	ipcServer := NewIPCServer(8889, c)
+	if err := ipcServer.Start(); err != nil {
+		log.Printf("[IPC] Failed to start IPC server: %v", err)
+	}
+
 	// TUN -> Server (egress)
 	go func() {
 		buffer := make([]byte, MTU)
