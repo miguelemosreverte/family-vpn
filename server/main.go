@@ -180,7 +180,7 @@ func (s *VPNServer) broadcastControlMessage(command string) {
 	for conn := range s.clients {
 		go func(c net.Conn) {
 			// Encrypt the control message
-			encrypted, err := s.encrypt(message)
+			encrypted, err := s.encryptData(message)
 			if err != nil {
 				log.Printf("[CONTROL] Failed to encrypt message for %s: %v", c.RemoteAddr(), err)
 				return
@@ -540,6 +540,43 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "OK")
 }
 
+// updateInitHandler triggers server and client updates
+func updateInitHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Printf("[UPDATE] Update initialization request received!")
+
+	// First, broadcast to all clients immediately
+	if globalServer != nil {
+		log.Printf("[UPDATE] Broadcasting UPDATE_AVAILABLE to all clients...")
+		globalServer.broadcastControlMessage("UPDATE_AVAILABLE")
+	}
+
+	// Respond to the request before updating (so deploy script gets response)
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "Update initiated. Server will update and restart.\n")
+
+	// Spawn background goroutine to update and restart server
+	go func() {
+		log.Printf("[UPDATE] Starting server self-update in 2 seconds...")
+		time.Sleep(2 * time.Second)
+
+		// Execute update script
+		updateScript := "/root/family-vpn/server-update.sh"
+		cmd := exec.Command("/bin/bash", updateScript)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		log.Printf("[UPDATE] Executing update script: %s", updateScript)
+		if err := cmd.Run(); err != nil {
+			log.Printf("[UPDATE] Update script failed: %v", err)
+		}
+	}()
+}
+
 func main() {
 	port := flag.String("port", "8888", "Port to listen on")
 	webhookPort := flag.String("webhook-port", "9000", "Port for GitHub webhook server")
@@ -566,12 +603,15 @@ func main() {
 	server := NewVPNServer(":"+*port, false, key)
 	globalServer = server
 
-	// Start GitHub webhook HTTP server
+	// Start HTTP server for webhooks and update endpoint
 	http.HandleFunc("/webhook", webhookHandler)
+	http.HandleFunc("/update/init", updateInitHandler)
 	go func() {
-		log.Printf("Starting GitHub webhook server on port %s", *webhookPort)
+		log.Printf("Starting HTTP server on port %s", *webhookPort)
+		log.Printf("  - POST /webhook - GitHub webhook endpoint")
+		log.Printf("  - POST /update/init - Trigger server and client updates")
 		if err := http.ListenAndServe(":"+*webhookPort, nil); err != nil {
-			log.Fatalf("Webhook server failed: %v", err)
+			log.Fatalf("HTTP server failed: %v", err)
 		}
 	}()
 
