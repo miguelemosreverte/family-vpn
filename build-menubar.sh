@@ -15,14 +15,14 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # Build VPN client
 echo "Building VPN client..."
 cd "$SCRIPT_DIR/client"
-go build -o vpn-client main.go
+go build -o vpn-client .
 echo "✅ VPN client built successfully"
 echo ""
 
 # Build menu bar application
 echo "Building menu bar application..."
 cd "$SCRIPT_DIR/menu-bar"
-go build -o family-vpn-menubar main.go
+go build -o family-vpn-menubar .
 echo "✅ Menu bar application built successfully"
 echo ""
 
