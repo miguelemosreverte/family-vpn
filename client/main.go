@@ -649,6 +649,9 @@ func (c *VPNClient) Connect() error {
 		}
 	}()
 
+	// Monitor outgoing video signals and send to peers via VPN
+	go c.monitorOutgoingVideoSignals(conn)
+
 	// Handle graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -701,6 +704,13 @@ func (c *VPNClient) handleControlMessage(message []byte) {
 		return
 	}
 
+	// Check if this is a VIDEO_CALL message
+	if strings.HasPrefix(command, "VIDEO_CALL:") {
+		log.Printf("[VIDEO] Received video call message")
+		c.handleVideoCallMessage(command[11:]) // Skip "VIDEO_CALL:" prefix
+		return
+	}
+
 	log.Printf("[CONTROL] Received: %s", command)
 
 	switch command {
@@ -746,6 +756,96 @@ func (c *VPNClient) writePeerListToFile() {
 		log.Printf("[PEERS] Failed to write peer file: %v", err)
 	} else {
 		log.Printf("[PEERS] Wrote peer list to %s", peerFile)
+	}
+}
+
+// handleVideoCallMessage handles incoming video call signaling from peers
+func (c *VPNClient) handleVideoCallMessage(data string) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("[VIDEO] Failed to get home dir: %v", err)
+		return
+	}
+
+	// Write video call signal to file for menu bar app to detect
+	signalFile := filepath.Join(homeDir, ".family-vpn-video-signal")
+	if err := os.WriteFile(signalFile, []byte(data), 0644); err != nil {
+		log.Printf("[VIDEO] Failed to write video signal: %v", err)
+	} else {
+		log.Printf("[VIDEO] Wrote video call signal to %s", signalFile)
+	}
+}
+
+// monitorOutgoingVideoSignals monitors for outgoing video signals and sends them via VPN
+func (c *VPNClient) monitorOutgoingVideoSignals(conn net.Conn) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("[VIDEO] Failed to get home dir: %v", err)
+		return
+	}
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	processedFiles := make(map[string]bool)
+
+	for c.enabled {
+		<-ticker.C
+
+		// Scan for video signal files
+		files, err := filepath.Glob(filepath.Join(homeDir, ".family-vpn-video-out-*"))
+		if err != nil {
+			continue
+		}
+
+		for _, file := range files {
+			if processedFiles[file] {
+				continue // Already processed
+			}
+
+			// Read signal data
+			data, err := os.ReadFile(file)
+			if err != nil {
+				continue
+			}
+
+			content := string(data)
+			if content == "" {
+				continue
+			}
+
+			log.Printf("[VIDEO] Found outgoing video signal in %s", file)
+
+			// Send via VPN as control message
+			message := []byte("CTRL:VIDEO_CALL:" + content)
+
+			// Encrypt the control message
+			encrypted, err := c.encrypt(message)
+			if err != nil {
+				log.Printf("[VIDEO] Failed to encrypt video signal: %v", err)
+				continue
+			}
+
+			// Send length + encrypted packet
+			lengthBuf := make([]byte, 4)
+			binary.BigEndian.PutUint32(lengthBuf, uint32(len(encrypted)))
+
+			if _, err := conn.Write(lengthBuf); err != nil {
+				log.Printf("[VIDEO] Failed to send video signal length: %v", err)
+				continue
+			}
+
+			if _, err := conn.Write(encrypted); err != nil {
+				log.Printf("[VIDEO] Failed to send video signal: %v", err)
+				continue
+			}
+
+			log.Printf("[VIDEO] Sent video signal to server")
+
+			// Mark as processed and delete file
+			processedFiles[file] = true
+			os.Remove(file)
+		}
 	}
 }
 

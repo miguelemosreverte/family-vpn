@@ -940,6 +940,12 @@ func startVideoCall(peer *PeerInfo) {
 	// Initialize video server if not already started
 	if videoServer == nil {
 		videoServer = videocall.NewVideoServer()
+
+		// Wire up SendToPeer callback to send over VPN
+		videoServer.SendToPeer = func(peerIP string, data []byte) error {
+			return sendVideoSignalToVPN(peerIP, data)
+		}
+
 		port, err := videoServer.Start()
 		if err != nil {
 			log.Printf("Failed to start video server: %v", err)
@@ -947,6 +953,20 @@ func startVideoCall(peer *PeerInfo) {
 			return
 		}
 		log.Printf("[VIDEO] Server started on port %d", port)
+
+		// Start monitoring for incoming video signals
+		go monitorIncomingVideoSignals()
+	}
+
+	// Send VIDEO_CALL_START signal to peer (auto-open their window)
+	startSignal := map[string]interface{}{
+		"type":     "call-start",
+		"from":     "me", // Will be replaced with actual IP
+		"fromName": "You",
+	}
+	startJSON, _ := json.Marshal(startSignal)
+	if err := sendVideoSignalToVPN(peer.VPNAddress, startJSON); err != nil {
+		log.Printf("[VIDEO] Failed to send call-start signal: %v", err)
 	}
 
 	// Get URL for this peer
@@ -960,9 +980,127 @@ func startVideoCall(peer *PeerInfo) {
 	} else {
 		log.Printf("Opened video call with %s (%s)", peer.Hostname, peer.VPNAddress)
 	}
+}
 
-	// TODO: Send VIDEO_CALL_START signal to peer over VPN
-	// This will make their video window auto-open (spontaneous call!)
+// sendVideoSignalToVPN sends a video call signal to a peer via the VPN
+func sendVideoSignalToVPN(peerIP string, data []byte) error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get home dir: %v", err)
+	}
+
+	// Write signal to file that VPN client will monitor
+	signalFile := filepath.Join(homeDir, fmt.Sprintf(".family-vpn-video-out-%s", peerIP))
+	message := fmt.Sprintf("%s:%s", peerIP, string(data))
+
+	if err := os.WriteFile(signalFile, []byte(message), 0644); err != nil {
+		return fmt.Errorf("failed to write signal file: %v", err)
+	}
+
+	log.Printf("[VIDEO] Sent signal to peer %s via %s", peerIP, signalFile)
+	return nil
+}
+
+// monitorIncomingVideoSignals monitors for incoming video call signals from VPN
+func monitorIncomingVideoSignals() {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("[VIDEO] Failed to get home dir: %v", err)
+		return
+	}
+
+	signalFile := filepath.Join(homeDir, ".family-vpn-video-signal")
+	lastContent := ""
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		data, err := os.ReadFile(signalFile)
+		if err != nil {
+			continue // File doesn't exist yet or can't read
+		}
+
+		content := string(data)
+		if content == lastContent || content == "" {
+			continue // No new signal
+		}
+		lastContent = content
+
+		log.Printf("[VIDEO] Received incoming video signal: %s", content)
+
+		// Parse the signal
+		var signal map[string]interface{}
+		if err := json.Unmarshal(data, &signal); err != nil {
+			log.Printf("[VIDEO] Failed to parse signal: %v", err)
+			continue
+		}
+
+		// Handle different signal types
+		sigType, _ := signal["type"].(string)
+		switch sigType {
+		case "call-start":
+			// Auto-open video window for incoming call
+			fromIP, _ := signal["from"].(string)
+			fromName, _ := signal["fromName"].(string)
+			if fromIP != "" {
+				log.Printf("[VIDEO] Incoming call from %s (%s) - auto-opening", fromName, fromIP)
+				go autoOpenVideoCall(fromIP, fromName)
+			}
+		case "offer", "answer", "ice-candidate":
+			// Forward WebRTC signaling to video server
+			if videoServer != nil {
+				fromIP, _ := signal["peer"].(string)
+				videoServer.HandlePeerMessage(fromIP, data)
+			}
+		}
+
+		// Clear the file to mark as processed
+		os.Remove(signalFile)
+	}
+}
+
+// autoOpenVideoCall automatically opens a video call window when peer initiates
+func autoOpenVideoCall(peerIP, peerName string) {
+	// Find peer info
+	var peer *PeerInfo
+	for _, p := range connectedPeers {
+		if p.VPNAddress == peerIP {
+			peer = p
+			break
+		}
+	}
+
+	if peer == nil {
+		peer = &PeerInfo{
+			VPNAddress: peerIP,
+			Hostname:   peerName,
+		}
+	}
+
+	// Initialize video server if needed
+	if videoServer == nil {
+		videoServer = videocall.NewVideoServer()
+		videoServer.SendToPeer = func(peerIP string, data []byte) error {
+			return sendVideoSignalToVPN(peerIP, data)
+		}
+
+		port, err := videoServer.Start()
+		if err != nil {
+			log.Printf("[VIDEO] Failed to start video server: %v", err)
+			return
+		}
+		log.Printf("[VIDEO] Server started on port %d", port)
+	}
+
+	// Open browser window
+	url := videoServer.GetURL(peer.VPNAddress, peer.Hostname)
+	cmd := exec.Command("open", url)
+	if err := cmd.Start(); err != nil {
+		log.Printf("[VIDEO] Failed to auto-open video window: %v", err)
+	} else {
+		log.Printf("[VIDEO] Auto-opened video call from %s", peerName)
+	}
 }
 
 func onExit() {

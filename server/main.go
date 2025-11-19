@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime/pprof"
+	"strings"
 	"sync"
 	"time"
 
@@ -289,6 +290,50 @@ func (s *VPNServer) broadcastControlMessage(command string) {
 	}
 }
 
+// sendToPeer sends a control message to a specific peer
+func (s *VPNServer) sendToPeer(peerIP, command string) error {
+	s.peersMutex.RLock()
+	conn, exists := s.peerConnections[peerIP]
+	wantsEncryption, encryptExists := s.peerEncryption[peerIP]
+	s.peersMutex.RUnlock()
+
+	if !exists || !encryptExists {
+		return fmt.Errorf("peer %s not found or not connected", peerIP)
+	}
+
+	log.Printf("[CONTROL] Sending '%s' to peer %s", command, peerIP)
+
+	// Create control message packet
+	message := append([]byte("CTRL:"), []byte(command)...)
+
+	// Encrypt if peer wants encryption
+	var toSend []byte
+	if wantsEncryption {
+		encrypted, err := s.encryptData(message)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt message: %v", err)
+		}
+		toSend = encrypted
+	} else {
+		toSend = message
+	}
+
+	// Send length + packet
+	lengthBuf := make([]byte, 4)
+	binary.BigEndian.PutUint32(lengthBuf, uint32(len(toSend)))
+
+	if _, err := conn.Write(lengthBuf); err != nil {
+		return fmt.Errorf("failed to send length: %v", err)
+	}
+
+	if _, err := conn.Write(toSend); err != nil {
+		return fmt.Errorf("failed to send message: %v", err)
+	}
+
+	log.Printf("[CONTROL] Sent to peer %s successfully", peerIP)
+	return nil
+}
+
 func (s *VPNServer) handleClient(conn net.Conn) {
 	defer conn.Close()
 
@@ -483,6 +528,20 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 				packet = packetBuf[:length]
 			}
 			timeDecrypt += time.Since(t1).Microseconds()
+
+			// Check if this is a VIDEO_CALL control message
+			if len(packet) > 17 && string(packet[:17]) == "CTRL:VIDEO_CALL:" {
+				// Extract peer IP and data: peerIP:data
+				videoData := string(packet[17:])
+				parts := strings.SplitN(videoData, ":", 2)
+				if len(parts) == 2 {
+					targetPeerIP := parts[0]
+					signalData := parts[1]
+					log.Printf("[VIDEO] Forwarding video call signal to peer %s", targetPeerIP)
+					go s.sendToPeer(targetPeerIP, "VIDEO_CALL:"+signalData)
+				}
+				continue // Don't write control messages to TUN
+			}
 
 			// Measure TUN write
 			t2 := time.Now()
