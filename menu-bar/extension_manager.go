@@ -145,6 +145,30 @@ func (m *ExtensionManager) RestartExtension(name string) error {
 	return nil
 }
 
+// getGoBinary returns the path to the go binary
+func getGoBinary() string {
+	// Try go in PATH first
+	if _, err := exec.LookPath("go"); err == nil {
+		return "go"
+	}
+
+	// Try common installation locations
+	commonPaths := []string{
+		"/usr/local/go/bin/go",
+		"/usr/bin/go",
+		"/opt/homebrew/bin/go",
+	}
+
+	for _, path := range commonPaths {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+
+	// Default to "go" and let it fail with a clear error
+	return "go"
+}
+
 // rebuildExtension rebuilds an extension binary
 func (m *ExtensionManager) rebuildExtension(name string) error {
 	log.Printf("[EXT] Rebuilding extension: %s", name)
@@ -156,9 +180,12 @@ func (m *ExtensionManager) rebuildExtension(name string) error {
 		return fmt.Errorf("git pull failed: %v", err)
 	}
 
-	// Build the extension
+	// Build the extension using the correct go binary
+	goBin := getGoBinary()
+	log.Printf("[EXT] Using go binary: %s", goBin)
+
 	extDir := filepath.Join(m.repoDir, "extensions", name)
-	buildCmd := exec.Command("go", "build", "-o", name+"-extension", ".")
+	buildCmd := exec.Command(goBin, "build", "-o", name+"-extension", ".")
 	buildCmd.Dir = extDir
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr

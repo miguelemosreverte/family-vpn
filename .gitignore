@@ -9,6 +9,11 @@ menu-bar/family-vpn-menubar
 vpn-server
 *.prof
 
+# Extension binaries
+extensions/*/video-extension
+extensions/*/screen-share-extension
+extensions/*/*-extension
+
 # Logs
 *.log
 nohup.out

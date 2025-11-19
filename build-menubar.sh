@@ -26,6 +26,17 @@ go build -o family-vpn-menubar .
 echo "✅ Menu bar application built successfully"
 echo ""
 
+# Build extensions
+echo "Building extensions..."
+cd "$SCRIPT_DIR/extensions/video"
+if [ -f "main.go" ]; then
+    go build -o video-extension .
+    echo "✅ Video extension built successfully"
+else
+    echo "⚠️  Video extension source not found (skipping)"
+fi
+echo ""
+
 echo "=========================================="
 echo "Build complete!"
 echo ""
