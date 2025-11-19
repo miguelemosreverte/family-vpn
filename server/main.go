@@ -708,34 +708,46 @@ func updateInitHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[UPDATE] Update initialization request received!")
+	// Parse component parameter (e.g., ?component=video)
+	component := r.URL.Query().Get("component")
+	if component == "" {
+		component = "all"
+	}
 
-	// First, broadcast to all clients immediately
+	log.Printf("[UPDATE] Update initialization request received for component: %s", component)
+
+	// Broadcast component-specific update message to all clients
 	if globalServer != nil {
-		log.Printf("[UPDATE] Broadcasting UPDATE_AVAILABLE to all clients...")
-		globalServer.broadcastControlMessage("UPDATE_AVAILABLE")
+		updateMessage := fmt.Sprintf("UPDATE_%s", strings.ToUpper(component))
+		log.Printf("[UPDATE] Broadcasting %s to all clients...", updateMessage)
+		globalServer.broadcastControlMessage(updateMessage)
 	}
 
 	// Respond to the request before updating (so deploy script gets response)
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Update initiated. Server will update and restart.\n")
+	fmt.Fprintf(w, "Update initiated for component: %s\n", component)
 
-	// Spawn background goroutine to update and restart server
-	go func() {
-		log.Printf("[UPDATE] Starting server self-update in 2 seconds...")
-		time.Sleep(2 * time.Second)
+	// Only restart server if component is "vpn" or "all"
+	if component == "vpn" || component == "all" {
+		// Spawn background goroutine to update and restart server
+		go func() {
+			log.Printf("[UPDATE] Starting server self-update in 2 seconds...")
+			time.Sleep(2 * time.Second)
 
-		// Execute update script
-		updateScript := "/root/family-vpn/server-update.sh"
-		cmd := exec.Command("/bin/bash", updateScript)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+			// Execute update script
+			updateScript := "/root/family-vpn/server-update.sh"
+			cmd := exec.Command("/bin/bash", updateScript)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
 
-		log.Printf("[UPDATE] Executing update script: %s", updateScript)
-		if err := cmd.Run(); err != nil {
-			log.Printf("[UPDATE] Update script failed: %v", err)
-		}
-	}()
+			log.Printf("[UPDATE] Executing update script: %s", updateScript)
+			if err := cmd.Run(); err != nil {
+				log.Printf("[UPDATE] Update script failed: %v", err)
+			}
+		}()
+	} else {
+		log.Printf("[UPDATE] Component %s does not require server restart", component)
+	}
 }
 
 func main() {

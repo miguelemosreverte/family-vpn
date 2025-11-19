@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/getlantern/systray"
-	videocall "github.com/miguelemosreverte/family-vpn/video-call"
 	"github.com/sqweek/dialog"
 )
 
@@ -58,8 +57,8 @@ var (
 	connectedPeers []*PeerInfo
 	peerMenuItems  map[string]*systray.MenuItem // Map peer VPN address to menu item
 
-	// Video call server
-	videoServer *videocall.VideoServer
+	// Extension manager
+	extensionManager *ExtensionManager
 )
 
 // getEnv reads an environment variable or returns a default value
@@ -197,23 +196,67 @@ func watchUpdateSignal() {
 	}
 	signalFile := filepath.Join(homeDir, ".family-vpn-update-signal")
 
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		<-ticker.C
 
 		// Check if signal file exists
-		if _, err := os.Stat(signalFile); err == nil {
-			log.Println("🔔 Update signal received from VPN server!")
+		data, err := os.ReadFile(signalFile)
+		if err != nil {
+			continue // File doesn't exist or can't read
+		}
 
-			// Remove signal file
-			os.Remove(signalFile)
+		updateMessage := strings.TrimSpace(string(data))
+		log.Printf("🔔 Update signal received from VPN server: %s", updateMessage)
 
-			// Trigger update
-			log.Println("Starting immediate update...")
+		// Remove signal file
+		os.Remove(signalFile)
+
+		// Handle component-specific updates
+		switch {
+		case updateMessage == "UPDATE_VIDEO":
+			log.Println("[UPDATE] Restarting video extension...")
+			if extensionManager != nil {
+				go func() {
+					if err := extensionManager.RestartExtension("video"); err != nil {
+						log.Printf("[UPDATE] Failed to restart video extension: %v", err)
+					}
+				}()
+			}
+
+		case updateMessage == "UPDATE_MENU":
+			log.Println("[UPDATE] Restarting menu-bar (self)...")
 			if err := performUpdate(); err != nil {
-				log.Printf("Update failed: %v", err)
+				log.Printf("[UPDATE] Failed to update menu-bar: %v", err)
+			}
+
+		case updateMessage == "UPDATE_VPN" || updateMessage == "UPDATE_ALL":
+			log.Println("[UPDATE] Full system update (VPN core + all components)...")
+			// Stop extensions first
+			if extensionManager != nil {
+				extensionManager.StopAll()
+			}
+			// Perform full update
+			if err := performUpdate(); err != nil {
+				log.Printf("[UPDATE] Failed to update: %v", err)
+			}
+
+		default:
+			// Check if it's an extension update (UPDATE_<extensionname>)
+			if strings.HasPrefix(updateMessage, "UPDATE_") {
+				extName := strings.ToLower(strings.TrimPrefix(updateMessage, "UPDATE_"))
+				log.Printf("[UPDATE] Restarting extension: %s", extName)
+				if extensionManager != nil {
+					go func() {
+						if err := extensionManager.RestartExtension(extName); err != nil {
+							log.Printf("[UPDATE] Failed to restart %s extension: %v", extName, err)
+						}
+					}()
+				}
+			} else {
+				log.Printf("[UPDATE] Unknown update signal: %s", updateMessage)
 			}
 		}
 	}
@@ -267,6 +310,20 @@ func main() {
 	vpnServerHost = getEnv("VPN_SERVER_HOST", "95.217.238.72")
 	vpnServerPort = getEnv("VPN_SERVER_PORT", "443")
 	log.Printf("VPN Server: %s:%s", vpnServerHost, vpnServerPort)
+
+	// Initialize extension manager
+	exePath, err := os.Executable()
+	if err != nil {
+		log.Fatalf("Failed to get executable path: %v", err)
+	}
+	repoDir := filepath.Dir(filepath.Dir(exePath))
+	extensionManager = NewExtensionManager(repoDir)
+
+	// Register video extension
+	videoExtPath := filepath.Join(repoDir, "extensions", "video", "video-extension")
+	extensionManager.RegisterExtension("video", videoExtPath, []string{"--vpn-port", "8889"})
+
+	log.Printf("[EXT] Registered video extension: %s", videoExtPath)
 
 	// Start auto-updater in background
 	go autoUpdater()
@@ -461,7 +518,7 @@ func connectVPN() {
 	// Monitor VPN client output in background
 	go monitorVPNOutput(stdout, stderr)
 
-	// Wait a moment for VPN to establish, then get real IP
+	// Wait a moment for VPN to establish, then get real IP and start extensions
 	go func() {
 		time.Sleep(3 * time.Second)
 		if vpnState.Connected {
@@ -473,6 +530,15 @@ func connectVPN() {
 			}
 			vpnState.Server = "Helsinki, Finland" // From family-vpn README
 			updateConnectionDetails()
+
+			// Start extensions
+			if extensionManager != nil {
+				log.Println("[EXT] Starting extensions...")
+				if err := extensionManager.StartAll(); err != nil {
+					log.Printf("[EXT] Failed to start extensions: %v", err)
+				}
+			}
+
 			dialog.Message("VPN Connected!\n\nServer: %s\nIP: %s", vpnState.Server, vpnState.IP).Title("Family VPN").Info()
 		}
 	}()
@@ -508,6 +574,12 @@ func handleConnectionFailure() {
 
 func disconnectVPN() {
 	log.Println("Disconnecting VPN...")
+
+	// Stop extensions first
+	if extensionManager != nil {
+		log.Println("[EXT] Stopping extensions...")
+		extensionManager.StopAll()
+	}
 
 	// Get sudo password from environment
 	password := os.Getenv("SUDO_PASSWORD")
@@ -937,173 +1009,31 @@ func openRemoteAccess(vpnIP string) {
 
 // startVideoCall initiates a video call with the specified peer
 func startVideoCall(peer *PeerInfo) {
-	// Initialize video server if not already started
-	if videoServer == nil {
-		videoServer = videocall.NewVideoServer()
+	log.Printf("[VIDEO] Initiating call with %s (%s)", peer.Hostname, peer.VPNAddress)
 
-		// Wire up SendToPeer callback to send over VPN
-		videoServer.SendToPeer = func(peerIP string, data []byte) error {
-			return sendVideoSignalToVPN(peerIP, data)
-		}
+	// Video extension will handle everything via IPC
+	// Just trigger it by opening the video call URL
+	// The extension listens on localhost:8890 (or dynamic port)
+	url := fmt.Sprintf("http://localhost:8890/?peer=%s&name=%s", peer.VPNAddress, peer.Hostname)
 
-		port, err := videoServer.Start()
-		if err != nil {
-			log.Printf("Failed to start video server: %v", err)
-			dialog.Message("Failed to start video call server\n\nError: %v", err).Title("Video Call Error").Error()
-			return
-		}
-		log.Printf("[VIDEO] Server started on port %d", port)
-
-		// Start monitoring for incoming video signals
-		go monitorIncomingVideoSignals()
-	}
-
-	// Send VIDEO_CALL_START signal to peer (auto-open their window)
-	startSignal := map[string]interface{}{
-		"type":     "call-start",
-		"from":     "me", // Will be replaced with actual IP
-		"fromName": "You",
-	}
-	startJSON, _ := json.Marshal(startSignal)
-	if err := sendVideoSignalToVPN(peer.VPNAddress, startJSON); err != nil {
-		log.Printf("[VIDEO] Failed to send call-start signal: %v", err)
-	}
-
-	// Get URL for this peer
-	url := videoServer.GetURL(peer.VPNAddress, peer.Hostname)
-
-	// Open browser window with video call UI
+	// Open browser window - the video extension will handle the rest
 	cmd := exec.Command("open", url)
 	if err := cmd.Start(); err != nil {
 		log.Printf("Failed to open video call window: %v", err)
-		dialog.Message("Failed to open video call window\n\nError: %v", err).Title("Video Call Error").Error()
+		dialog.Message("Failed to open video call window\n\nMake sure the video extension is running.\n\nError: %v", err).Title("Video Call Error").Error()
 	} else {
 		log.Printf("Opened video call with %s (%s)", peer.Hostname, peer.VPNAddress)
 	}
 }
 
-// sendVideoSignalToVPN sends a video call signal to a peer via the VPN
-func sendVideoSignalToVPN(peerIP string, data []byte) error {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("failed to get home dir: %v", err)
-	}
-
-	// Write signal to file that VPN client will monitor
-	signalFile := filepath.Join(homeDir, fmt.Sprintf(".family-vpn-video-out-%s", peerIP))
-	message := fmt.Sprintf("%s:%s", peerIP, string(data))
-
-	if err := os.WriteFile(signalFile, []byte(message), 0644); err != nil {
-		return fmt.Errorf("failed to write signal file: %v", err)
-	}
-
-	log.Printf("[VIDEO] Sent signal to peer %s via %s", peerIP, signalFile)
-	return nil
-}
-
-// monitorIncomingVideoSignals monitors for incoming video call signals from VPN
-func monitorIncomingVideoSignals() {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		log.Printf("[VIDEO] Failed to get home dir: %v", err)
-		return
-	}
-
-	signalFile := filepath.Join(homeDir, ".family-vpn-video-signal")
-	lastContent := ""
-
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		data, err := os.ReadFile(signalFile)
-		if err != nil {
-			continue // File doesn't exist yet or can't read
-		}
-
-		content := string(data)
-		if content == lastContent || content == "" {
-			continue // No new signal
-		}
-		lastContent = content
-
-		log.Printf("[VIDEO] Received incoming video signal: %s", content)
-
-		// Parse the signal
-		var signal map[string]interface{}
-		if err := json.Unmarshal(data, &signal); err != nil {
-			log.Printf("[VIDEO] Failed to parse signal: %v", err)
-			continue
-		}
-
-		// Handle different signal types
-		sigType, _ := signal["type"].(string)
-		switch sigType {
-		case "call-start":
-			// Auto-open video window for incoming call
-			fromIP, _ := signal["from"].(string)
-			fromName, _ := signal["fromName"].(string)
-			if fromIP != "" {
-				log.Printf("[VIDEO] Incoming call from %s (%s) - auto-opening", fromName, fromIP)
-				go autoOpenVideoCall(fromIP, fromName)
-			}
-		case "offer", "answer", "ice-candidate":
-			// Forward WebRTC signaling to video server
-			if videoServer != nil {
-				fromIP, _ := signal["peer"].(string)
-				videoServer.HandlePeerMessage(fromIP, data)
-			}
-		}
-
-		// Clear the file to mark as processed
-		os.Remove(signalFile)
-	}
-}
-
-// autoOpenVideoCall automatically opens a video call window when peer initiates
-func autoOpenVideoCall(peerIP, peerName string) {
-	// Find peer info
-	var peer *PeerInfo
-	for _, p := range connectedPeers {
-		if p.VPNAddress == peerIP {
-			peer = p
-			break
-		}
-	}
-
-	if peer == nil {
-		peer = &PeerInfo{
-			VPNAddress: peerIP,
-			Hostname:   peerName,
-		}
-	}
-
-	// Initialize video server if needed
-	if videoServer == nil {
-		videoServer = videocall.NewVideoServer()
-		videoServer.SendToPeer = func(peerIP string, data []byte) error {
-			return sendVideoSignalToVPN(peerIP, data)
-		}
-
-		port, err := videoServer.Start()
-		if err != nil {
-			log.Printf("[VIDEO] Failed to start video server: %v", err)
-			return
-		}
-		log.Printf("[VIDEO] Server started on port %d", port)
-	}
-
-	// Open browser window
-	url := videoServer.GetURL(peer.VPNAddress, peer.Hostname)
-	cmd := exec.Command("open", url)
-	if err := cmd.Start(); err != nil {
-		log.Printf("[VIDEO] Failed to auto-open video window: %v", err)
-	} else {
-		log.Printf("[VIDEO] Auto-opened video call from %s", peerName)
-	}
-}
 
 func onExit() {
+	// Stop all extensions first
+	if extensionManager != nil {
+		log.Println("[EXT] Stopping all extensions...")
+		extensionManager.StopAll()
+	}
+
 	// Disconnect VPN if connected
 	if vpnState.Connected && vpnState.Process != nil {
 		log.Println("Disconnecting VPN before exit...")

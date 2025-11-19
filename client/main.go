@@ -719,21 +719,26 @@ func (c *VPNClient) handleControlMessage(message []byte) {
 
 	log.Printf("[CONTROL] Received: %s", command)
 
-	switch command {
-	case "UPDATE_AVAILABLE":
-		log.Println("[CONTROL] Update available! Writing to update signal file...")
-		// Write update signal that menu bar app will detect
+	// Handle component-specific update messages
+	if strings.HasPrefix(command, "UPDATE_") {
+		log.Printf("[CONTROL] Update signal received: %s", command)
+		// Write component-specific update signal that menu bar app will detect
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
 			log.Printf("[CONTROL] Failed to get home dir: %v", err)
 			return
 		}
 		signalFile := filepath.Join(homeDir, ".family-vpn-update-signal")
-		if err := os.WriteFile(signalFile, []byte("update"), 0644); err != nil {
+		// Write the full update message (e.g., "UPDATE_VIDEO", "UPDATE_VPN", etc.)
+		if err := os.WriteFile(signalFile, []byte(command), 0644); err != nil {
 			log.Printf("[CONTROL] Failed to write update signal: %v", err)
 		} else {
-			log.Println("[CONTROL] Update signal written successfully")
+			log.Printf("[CONTROL] Update signal written: %s", command)
 		}
+		return
+	}
+
+	switch command {
 	default:
 		log.Printf("[CONTROL] Unknown command: %s", command)
 	}
