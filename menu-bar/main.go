@@ -49,7 +49,55 @@ func getEnv(key, defaultValue string) string {
 	return value
 }
 
+// loadEnvFile loads environment variables from .env file in parent directory
+func loadEnvFile() error {
+	// Get executable path and look for .env in parent directory
+	exePath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+
+	// Go up to parent directory (family-vpn root)
+	parentDir := filepath.Dir(filepath.Dir(exePath))
+	envPath := filepath.Join(parentDir, ".env")
+
+	// Try to read the .env file
+	file, err := os.Open(envPath)
+	if err != nil {
+		// If .env doesn't exist in parent, that's okay - will use defaults
+		log.Printf("No .env file found at %s, using defaults", envPath)
+		return nil
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		// Skip empty lines and comments
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// Parse KEY=VALUE
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+			os.Setenv(key, value)
+		}
+	}
+
+	log.Printf("Loaded configuration from %s", envPath)
+	return scanner.Err()
+}
+
 func main() {
+	// Load .env file before starting
+	if err := loadEnvFile(); err != nil {
+		log.Printf("Warning: Failed to load .env file: %v", err)
+	}
+
 	systray.Run(onReady, onExit)
 }
 
@@ -162,18 +210,14 @@ func connectVPN() {
 		return
 	}
 
-	// Get sudo password using macOS graphical prompt
-	passwordScript := `osascript -e 'Tell application "System Events" to display dialog "Family VPN needs administrator access to create network interfaces.\n\nPlease enter your password:" with title "Family VPN" default answer "" with hidden answer' -e 'text returned of result'`
-	passwordCmd := exec.Command("sh", "-c", passwordScript)
-	passwordOutput, err := passwordCmd.Output()
-	if err != nil {
-		log.Printf("User cancelled or failed to provide password: %v", err)
-		// Don't show error dialog on auto-connect - just log it
-		log.Println("Failed to get sudo password - VPN will not connect automatically")
+	// Get sudo password from environment (.env file)
+	password := os.Getenv("SUDO_PASSWORD")
+	if password == "" {
+		log.Printf("SUDO_PASSWORD not found in .env file")
+		dialog.Message("SUDO_PASSWORD not found in .env file.\n\nPlease add your password to the .env file.").Title("Family VPN").Error()
 		handleConnectionFailure()
 		return
 	}
-	password := strings.TrimSpace(string(passwordOutput))
 
 	// Spawn VPN client with sudo using the password
 	serverAddr := fmt.Sprintf("%s:%s", vpnServerHost, vpnServerPort)
@@ -274,20 +318,61 @@ func handleConnectionFailure() {
 }
 
 func disconnectVPN() {
-	if vpnState.Process != nil {
-		// Kill the VPN client process
-		if err := vpnState.Process.Process.Kill(); err != nil {
-			log.Printf("Failed to kill VPN client: %v", err)
-		}
-		vpnState.Process = nil
+	log.Println("Disconnecting VPN...")
+
+	// Get sudo password from environment
+	password := os.Getenv("SUDO_PASSWORD")
+	if password == "" {
+		log.Printf("SUDO_PASSWORD not found - cannot disconnect")
+		return
 	}
 
+	// Kill VPN client process with sudo (required since it runs as root)
+	log.Println("Killing vpn-client processes with sudo...")
+	killCmd := exec.Command("sudo", "-S", "pkill", "-9", "-f", "vpn-client")
+	killStdin, _ := killCmd.StdinPipe()
+	go func() {
+		defer killStdin.Close()
+		io.WriteString(killStdin, password+"\n")
+	}()
+	killCmd.Run()
+
+	// Wait for process to die
+	time.Sleep(500 * time.Millisecond)
+
+	// Manually restore routing and DNS (can't rely on VPN client cleanup)
+	log.Println("Restoring network configuration...")
+
+	// Restore default route
+	restoreRoute := exec.Command("sudo", "-S", "route", "-n", "delete", "default")
+	routeStdin, _ := restoreRoute.StdinPipe()
+	go func() {
+		defer routeStdin.Close()
+		io.WriteString(routeStdin, password+"\n")
+	}()
+	restoreRoute.Run()
+
+	// Add back default route through original gateway
+	addRoute := exec.Command("sudo", "-S", "route", "-n", "add", "-net", "default", "192.168.100.1")
+	addStdin, _ := addRoute.StdinPipe()
+	go func() {
+		defer addStdin.Close()
+		io.WriteString(addStdin, password+"\n")
+	}()
+	addRoute.Run()
+
+	// Restore DNS to automatic
+	restoreDNS := exec.Command("networksetup", "-setdnsservers", "Wi-Fi", "Empty")
+	restoreDNS.Run()
+
+	vpnState.Process = nil
 	vpnState.Connected = false
 	mStatus.SetTitle("● Disconnected")
 	mToggle.SetTitle("Connect to VPN")
 	updateConnectionDetails()
 	updateMenuBarIcon()
 
+	log.Println("VPN disconnected and network restored successfully")
 	dialog.Message("VPN Disconnected").Title("Family VPN").Info()
 }
 
@@ -314,20 +399,43 @@ func monitorVPNOutput(stdout, stderr io.ReadCloser) {
 
 func getPublicIP() string {
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("https://ifconfig.me")
+
+	// Try api.ipify.org first (reliable, always returns plain text IP)
+	resp, err := client.Get("https://api.ipify.org")
 	if err != nil {
-		log.Printf("Failed to get public IP: %v", err)
-		return ""
+		log.Printf("Failed to get public IP from ipify: %v", err)
+		// Fallback to icanhazip.com
+		resp, err = client.Get("https://icanhazip.com")
+		if err != nil {
+			log.Printf("Failed to get public IP from icanhazip: %v", err)
+			return "Unknown"
+		}
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Printf("Failed to read IP response: %v", err)
-		return ""
+		return "Unknown"
 	}
 
-	return strings.TrimSpace(string(body))
+	ip := strings.TrimSpace(string(body))
+
+	// Validate that we got an IP address, not HTML
+	// IP addresses should be less than 50 characters
+	if len(ip) > 50 || strings.Contains(ip, "<") || strings.Contains(ip, ">") {
+		log.Printf("Received invalid IP response (possibly HTML): %s", ip[:min(len(ip), 100)])
+		return "Unknown"
+	}
+
+	return ip
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func dataUpdater() {
