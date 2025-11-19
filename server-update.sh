@@ -24,7 +24,7 @@ git pull origin main
 # Rebuild server binary
 echo "🔨 Building server..."
 cd "$REPO_DIR/server"
-go build -o "$SERVER_BINARY" main.go
+/usr/local/go/bin/go build -o "$SERVER_BINARY" main.go
 
 if [ ! -f "$SERVER_BINARY" ]; then
     echo "❌ Build failed - binary not found"
