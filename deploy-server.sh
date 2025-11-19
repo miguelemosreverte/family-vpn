@@ -63,14 +63,14 @@ git reset --hard origin/main
 
 echo '→ Building server...'
 cd server
-/usr/local/go/bin/go build -o vpn-server main.go
+/usr/local/go/bin/go build -o ../vpn-server main.go
+cd ..
 
 echo '→ Stopping old server...'
 pkill vpn-server || true
 sleep 1
 
 echo '→ Starting new server...'
-cd ..
 nohup ./vpn-server -port 443 -webhook-port 9000 -tls -tls-cert certs/server.crt -tls-key certs/server.key > /var/log/vpn-server.log 2>&1 &
 sleep 2
 
@@ -79,6 +79,8 @@ if pgrep vpn-server > /dev/null; then
     pgrep vpn-server
 else
     echo '✗ Server failed to start'
+    echo 'Error logs:'
+    tail -20 /var/log/vpn-server.log
     exit 1
 fi
 "
