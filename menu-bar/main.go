@@ -426,6 +426,19 @@ func toggleVPN() {
 }
 
 func connectVPN() {
+	// SINGLETON: Check if VPN client is already running
+	checkCmd := exec.Command("pgrep", "-f", "vpn-client")
+	if output, err := checkCmd.Output(); err == nil && len(output) > 0 {
+		log.Println("⚠️  VPN client already running - skipping duplicate start")
+		// Assume already connected
+		vpnState.Connected = true
+		mStatus.SetTitle("● Connected")
+		mToggle.SetTitle("Disconnect from VPN")
+		updateConnectionDetails()
+		updateMenuBarIcon()
+		return
+	}
+
 	// Update UI to show connecting state
 	mStatus.SetTitle("● Connecting...")
 	mToggle.SetTitle("Cancel")
