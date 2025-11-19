@@ -70,7 +70,7 @@ pkill vpn-server || true
 sleep 1
 
 echo '→ Starting new server...'
-nohup ./vpn-server -port 8888 > /var/log/vpn-server.log 2>&1 &
+nohup ./vpn-server -port 443 -webhook-port 9000 -tls > /var/log/vpn-server.log 2>&1 &
 sleep 1
 
 if pgrep vpn-server > /dev/null; then
