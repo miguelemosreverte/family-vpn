@@ -92,11 +92,115 @@ func loadEnvFile() error {
 	return scanner.Err()
 }
 
+// checkForUpdates checks if there are new commits on GitHub
+func checkForUpdates() (bool, error) {
+	// Get executable path to find repo directory
+	exePath, err := os.Executable()
+	if err != nil {
+		return false, err
+	}
+	repoDir := filepath.Dir(filepath.Dir(exePath))
+
+	// Fetch latest from remote
+	fetchCmd := exec.Command("git", "-C", repoDir, "fetch", "origin", "main")
+	if err := fetchCmd.Run(); err != nil {
+		return false, fmt.Errorf("git fetch failed: %v", err)
+	}
+
+	// Compare local and remote HEAD
+	localCmd := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
+	localOutput, err := localCmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("failed to get local HEAD: %v", err)
+	}
+
+	remoteCmd := exec.Command("git", "-C", repoDir, "rev-parse", "origin/main")
+	remoteOutput, err := remoteCmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("failed to get remote HEAD: %v", err)
+	}
+
+	localHash := strings.TrimSpace(string(localOutput))
+	remoteHash := strings.TrimSpace(string(remoteOutput))
+
+	return localHash != remoteHash, nil
+}
+
+// performUpdate pulls changes, rebuilds, and restarts the app
+func performUpdate() error {
+	log.Println("🔄 Update available! Starting auto-update...")
+
+	// Get paths
+	exePath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	repoDir := filepath.Dir(filepath.Dir(exePath))
+
+	// Pull latest changes
+	log.Println("Pulling latest changes from GitHub...")
+	pullCmd := exec.Command("git", "-C", repoDir, "pull", "origin", "main")
+	if output, err := pullCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git pull failed: %v\n%s", err, output)
+	}
+
+	// Rebuild
+	log.Println("Rebuilding menu bar app...")
+	buildScript := filepath.Join(repoDir, "build-menubar.sh")
+	buildCmd := exec.Command(buildScript)
+	buildCmd.Dir = repoDir
+	if output, err := buildCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("build failed: %v\n%s", err, output)
+	}
+
+	log.Println("✅ Update complete! Restarting app...")
+
+	// Restart the app
+	restartCmd := exec.Command(exePath)
+	if err := restartCmd.Start(); err != nil {
+		return fmt.Errorf("failed to restart: %v", err)
+	}
+
+	// Exit current process
+	os.Exit(0)
+	return nil
+}
+
+// autoUpdater runs in background and checks for updates every hour
+func autoUpdater() {
+	// Wait 5 minutes before first check (let app start up first)
+	time.Sleep(5 * time.Minute)
+
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+
+	for {
+		log.Println("Checking for updates...")
+
+		hasUpdate, err := checkForUpdates()
+		if err != nil {
+			log.Printf("Update check failed: %v", err)
+		} else if hasUpdate {
+			log.Println("Update found! Starting update process...")
+			if err := performUpdate(); err != nil {
+				log.Printf("Update failed: %v", err)
+			}
+		} else {
+			log.Println("No updates available")
+		}
+
+		<-ticker.C
+	}
+}
+
 func main() {
 	// Load .env file before starting
 	if err := loadEnvFile(); err != nil {
 		log.Printf("Warning: Failed to load .env file: %v", err)
 	}
+
+	// Start auto-updater in background
+	go autoUpdater()
 
 	systray.Run(onReady, onExit)
 }
