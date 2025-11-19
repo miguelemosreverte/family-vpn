@@ -677,10 +677,12 @@ func getVersionInfo() string {
 func showAbout() {
 	version := getVersionInfo()
 
-	about := fmt.Sprintf(`Family VPN Manager
+	about := fmt.Sprintf(`🟦🟦🟦 CYAN EDITION 🟦🟦🟦
 
-Secure, encrypted VPN built from scratch
-with AES-256-GCM encryption.
+Family VPN Manager
+
+🔵 Secure, encrypted VPN built from scratch
+🔵 with AES-256-GCM encryption.
 
 Server: Helsinki, Finland
 Encryption: AES-256-GCM
@@ -689,9 +691,11 @@ Encryption: AES-256-GCM
 
 Made with love for the family. ❤️
 
+🟦 This proves the binary was rebuilt! 🟦
+
 💕 2025`, version)
 
-	dialog.Message(about).Title("About Family VPN").Info()
+	dialog.Message(about).Title("🔵 About Family VPN - CYAN EDITION 🔵").Info()
 }
 
 func getConnectedIcon() []byte {
