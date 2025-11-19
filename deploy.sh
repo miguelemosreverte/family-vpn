@@ -37,8 +37,8 @@ echo "🚀 Triggering server update..."
 
 # Ping the update endpoint
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$UPDATE_ENDPOINT" 2>&1)
-HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-BODY=$(echo "$RESPONSE" | head -n-1)
+HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+BODY=$(echo "$RESPONSE" | sed '$d')
 
 if [ "$HTTP_CODE" = "200" ]; then
     echo "✅ Update initiated successfully!"
