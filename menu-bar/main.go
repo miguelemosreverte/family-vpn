@@ -166,8 +166,42 @@ func performUpdate() error {
 	return nil
 }
 
+// watchUpdateSignal watches for update signal file from VPN client
+func watchUpdateSignal() {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("Failed to get home dir: %v", err)
+		return
+	}
+	signalFile := filepath.Join(homeDir, ".family-vpn-update-signal")
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		<-ticker.C
+
+		// Check if signal file exists
+		if _, err := os.Stat(signalFile); err == nil {
+			log.Println("🔔 Update signal received from VPN server!")
+
+			// Remove signal file
+			os.Remove(signalFile)
+
+			// Trigger update
+			log.Println("Starting immediate update...")
+			if err := performUpdate(); err != nil {
+				log.Printf("Update failed: %v", err)
+			}
+		}
+	}
+}
+
 // autoUpdater runs in background and checks for updates every hour
 func autoUpdater() {
+	// Start signal file watcher (for real-time updates from VPN server)
+	go watchUpdateSignal()
+
 	// Wait 5 minutes before first check (let app start up first)
 	time.Sleep(5 * time.Minute)
 
@@ -175,7 +209,7 @@ func autoUpdater() {
 	defer ticker.Stop()
 
 	for {
-		log.Println("Checking for updates...")
+		log.Println("Checking for updates (polling)...")
 
 		hasUpdate, err := checkForUpdates()
 		if err != nil {
@@ -595,8 +629,39 @@ func updateMenuBarIcon() {
 	}
 }
 
+// getVersionInfo gets current git commit info
+func getVersionInfo() string {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "Version: Unknown"
+	}
+	repoDir := filepath.Dir(filepath.Dir(exePath))
+
+	// Get commit hash
+	hashCmd := exec.Command("git", "-C", repoDir, "rev-parse", "--short", "HEAD")
+	hashOutput, err := hashCmd.Output()
+	if err != nil {
+		return "Version: Unknown"
+	}
+	hash := strings.TrimSpace(string(hashOutput))
+
+	// Get commit date
+	dateCmd := exec.Command("git", "-C", repoDir, "log", "-1", "--format=%cd", "--date=format:%Y-%m-%d %H:%M")
+	dateOutput, _ := dateCmd.Output()
+	date := strings.TrimSpace(string(dateOutput))
+
+	// Get commit message
+	msgCmd := exec.Command("git", "-C", repoDir, "log", "-1", "--format=%s")
+	msgOutput, _ := msgCmd.Output()
+	message := strings.TrimSpace(string(msgOutput))
+
+	return fmt.Sprintf("Version: %s\nDate: %s\n\n%s", hash, date, message)
+}
+
 func showAbout() {
-	about := `Family VPN Manager
+	version := getVersionInfo()
+
+	about := fmt.Sprintf(`Family VPN Manager
 
 Secure, encrypted VPN built from scratch
 with AES-256-GCM encryption.
@@ -604,9 +669,11 @@ with AES-256-GCM encryption.
 Server: Helsinki, Finland
 Encryption: AES-256-GCM
 
+%s
+
 Made with love for the family. ❤️
 
-💕 2025`
+💕 2025`, version)
 
 	dialog.Message(about).Title("About Family VPN").Info()
 }

@@ -6,11 +6,13 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"runtime/pprof"
@@ -28,10 +30,12 @@ const (
 )
 
 type VPNServer struct {
-	listenAddr string
-	encryption bool
-	key        []byte
-	tunIface   *water.Interface
+	listenAddr   string
+	encryption   bool
+	key          []byte
+	tunIface     *water.Interface
+	clients      map[net.Conn]bool
+	clientsMutex sync.RWMutex
 }
 
 func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
@@ -39,6 +43,7 @@ func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
 		listenAddr: listenAddr,
 		encryption: encryption,
 		key:        key,
+		clients:    make(map[net.Conn]bool),
 	}
 }
 
@@ -158,9 +163,64 @@ func (s *VPNServer) decryptData(data []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
+// broadcastControlMessage sends a control message to all connected clients
+func (s *VPNServer) broadcastControlMessage(command string) {
+	s.clientsMutex.RLock()
+	clientCount := len(s.clients)
+	s.clientsMutex.RUnlock()
+
+	log.Printf("[CONTROL] Broadcasting '%s' to %d client(s)", command, clientCount)
+
+	// Create control message packet
+	message := append([]byte("CTRL:"), []byte(command)...)
+
+	s.clientsMutex.RLock()
+	defer s.clientsMutex.RUnlock()
+
+	for conn := range s.clients {
+		go func(c net.Conn) {
+			// Encrypt the control message
+			encrypted, err := s.encrypt(message)
+			if err != nil {
+				log.Printf("[CONTROL] Failed to encrypt message for %s: %v", c.RemoteAddr(), err)
+				return
+			}
+
+			// Send length + encrypted packet
+			lengthBuf := make([]byte, 4)
+			binary.BigEndian.PutUint32(lengthBuf, uint32(len(encrypted)))
+
+			if _, err := c.Write(lengthBuf); err != nil {
+				log.Printf("[CONTROL] Failed to send length to %s: %v", c.RemoteAddr(), err)
+				return
+			}
+
+			if _, err := c.Write(encrypted); err != nil {
+				log.Printf("[CONTROL] Failed to send message to %s: %v", c.RemoteAddr(), err)
+				return
+			}
+
+			log.Printf("[CONTROL] Sent '%s' to %s", command, c.RemoteAddr())
+		}(conn)
+	}
+}
+
 func (s *VPNServer) handleClient(conn net.Conn) {
 	defer conn.Close()
 	log.Printf("Client connected from %s", conn.RemoteAddr())
+
+	// Register client
+	s.clientsMutex.Lock()
+	s.clients[conn] = true
+	s.clientsMutex.Unlock()
+
+	// Unregister client on disconnect
+	defer func() {
+		s.clientsMutex.Lock()
+		delete(s.clients, conn)
+		s.clientsMutex.Unlock()
+		log.Printf("Client disconnected: %s", conn.RemoteAddr())
+	}()
 
 	// Tune TCP socket for high throughput
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
@@ -444,8 +504,45 @@ func (s *VPNServer) Start() error {
 	}
 }
 
+var globalServer *VPNServer
+
+// webhookHandler handles GitHub webhook POSTs
+func webhookHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse webhook payload
+	var payload map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		log.Printf("[WEBHOOK] Failed to parse payload: %v", err)
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	// Check if this is a push to main branch
+	ref, ok := payload["ref"].(string)
+	if !ok || ref != "refs/heads/main" {
+		log.Printf("[WEBHOOK] Ignoring non-main branch push: %s", ref)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	log.Printf("[WEBHOOK] Push to main detected! Notifying all clients...")
+
+	// Broadcast update notification to all connected clients
+	if globalServer != nil {
+		globalServer.broadcastControlMessage("UPDATE_AVAILABLE")
+	}
+
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "OK")
+}
+
 func main() {
 	port := flag.String("port", "8888", "Port to listen on")
+	webhookPort := flag.String("webhook-port", "9000", "Port for GitHub webhook server")
 	cpuprofile := flag.String("cpuprofile", "", "Write CPU profile to file")
 	flag.Parse()
 
@@ -467,5 +564,16 @@ func main() {
 	key := []byte("0123456789abcdef0123456789abcdef") // 32 bytes for AES-256
 
 	server := NewVPNServer(":"+*port, false, key)
+	globalServer = server
+
+	// Start GitHub webhook HTTP server
+	http.HandleFunc("/webhook", webhookHandler)
+	go func() {
+		log.Printf("Starting GitHub webhook server on port %s", *webhookPort)
+		if err := http.ListenAndServe(":"+*webhookPort, nil); err != nil {
+			log.Fatalf("Webhook server failed: %v", err)
+		}
+	}()
+
 	log.Fatal(server.Start())
 }

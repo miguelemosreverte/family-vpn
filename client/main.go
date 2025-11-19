@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"runtime/pprof"
 	"sync"
@@ -543,6 +544,12 @@ func (c *VPNClient) Connect() error {
 				continue
 			}
 
+			// Check if this is a control message
+			if len(packet) > 5 && string(packet[:5]) == "CTRL:" {
+				c.handleControlMessage(packet[5:])
+				continue
+			}
+
 			// Measure TUN write
 			t2 := time.Now()
 			if _, err := c.tunIface.Write(packet); err != nil {
@@ -582,6 +589,30 @@ func (c *VPNClient) Connect() error {
 	}
 
 	return c.Disconnect()
+}
+
+func (c *VPNClient) handleControlMessage(message []byte) {
+	command := string(message)
+	log.Printf("[CONTROL] Received: %s", command)
+
+	switch command {
+	case "UPDATE_AVAILABLE":
+		log.Println("[CONTROL] Update available! Writing to update signal file...")
+		// Write update signal that menu bar app will detect
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			log.Printf("[CONTROL] Failed to get home dir: %v", err)
+			return
+		}
+		signalFile := filepath.Join(homeDir, ".family-vpn-update-signal")
+		if err := os.WriteFile(signalFile, []byte("update"), 0644); err != nil {
+			log.Printf("[CONTROL] Failed to write update signal: %v", err)
+		} else {
+			log.Println("[CONTROL] Update signal written successfully")
+		}
+	default:
+		log.Printf("[CONTROL] Unknown command: %s", command)
+	}
 }
 
 func (c *VPNClient) Disconnect() error {
