@@ -45,8 +45,8 @@ func (e *SSHExtension) Start() error {
 	mux.HandleFunc("/setup-ssh-key", e.handleSetupSSHKey)
 	mux.HandleFunc("/health", e.handleHealth)
 
-	addr := fmt.Sprintf("127.0.0.1:%d", e.port)
-	log.Printf("[SSH] Starting server on http://%s", addr)
+	addr := fmt.Sprintf("0.0.0.0:%d", e.port)
+	log.Printf("[SSH] Starting server on http://%s (accessible via VPN)", addr)
 
 	go func() {
 		if err := http.ListenAndServe(addr, mux); err != nil {
