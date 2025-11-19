@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"time"
@@ -1020,10 +1021,32 @@ func handleSSHTerminalClick(item *systray.MenuItem, peer *PeerInfo) {
 	}
 }
 
+// getUsernameForPeer determines the SSH username for a peer based on hostname
+func getUsernameForPeer(peer *PeerInfo) string {
+	// Simple mapping based on hostname patterns
+	hostname := strings.ToLower(peer.Hostname)
+
+	// Extract username from hostname like "Miguels-MacBook-Air.local" → "miguel_lemos"
+	if strings.Contains(hostname, "miguel") {
+		return "miguel_lemos"
+	} else if strings.Contains(hostname, "anastasiia") {
+		return "anastasiia"
+	}
+
+	// Fallback to current user
+	if u, err := user.Current(); err == nil {
+		return u.Username
+	}
+	return ""
+}
+
 // openSSHTerminal opens an SSH terminal to the peer via SSH extension
 func openSSHTerminal(peer *PeerInfo) {
+	username := getUsernameForPeer(peer)
+
 	// Trigger SSH extension on localhost:8891
-	url := fmt.Sprintf("http://localhost:8891/ssh?peer=%s&name=%s", peer.VPNAddress, peer.Hostname)
+	url := fmt.Sprintf("http://localhost:8891/ssh?peer=%s&name=%s&username=%s",
+		peer.VPNAddress, peer.Hostname, username)
 
 	resp, err := http.Get(url)
 	if err != nil {
