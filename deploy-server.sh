@@ -10,7 +10,7 @@ if [ -f .env ]; then
 fi
 
 SERVER_HOST="${VPN_SERVER_HOST:-95.217.238.72}"
-SERVER_DIR="vpn-first-steps"
+SERVER_DIR="family-vpn"
 
 # Handle SSH key - if VPN_SSH_KEY is set and looks like base64, decode it
 if [ -n "${VPN_SSH_KEY:-}" ] && [ "${#VPN_SSH_KEY}" -gt 100 ]; then
