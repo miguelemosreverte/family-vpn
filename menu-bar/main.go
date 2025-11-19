@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/getlantern/systray"
+	videocall "github.com/miguelemosreverte/family-vpn/video-call"
 	"github.com/sqweek/dialog"
 )
 
@@ -56,6 +57,9 @@ var (
 	// Peer list
 	connectedPeers []*PeerInfo
 	peerMenuItems  map[string]*systray.MenuItem // Map peer VPN address to menu item
+
+	// Video call server
+	videoServer *videocall.VideoServer
 )
 
 // getEnv reads an environment variable or returns a default value
@@ -880,22 +884,35 @@ func updatePeerMenu() {
 
 	// Add new peer menu items
 	for _, peer := range connectedPeers {
-		// Create menu item: "🖥️  MacBook-Air (10.8.0.2) - Click to remote access"
+		// Create menu item: "🖥️  MacBook-Air (10.8.0.2)"
 		label := fmt.Sprintf("🖥️  %s (%s)", peer.Hostname, peer.VPNAddress)
-		tooltip := fmt.Sprintf("Click to remote access %s at %s", peer.Hostname, peer.VPNAddress)
 
-		item := systray.AddMenuItem(label, tooltip)
+		item := systray.AddMenuItem(label, "Connected device")
 		peerMenuItems[peer.VPNAddress] = item
 
-		// Start click handler for this peer
-		go handlePeerClick(item, peer)
+		// Add submenu items for this peer
+		videoCallItem := item.AddSubMenuItem("📹 Video Call", "Start video call")
+		screenShareItem := item.AddSubMenuItem("🖥️ Screen Sharing", "Remote desktop access")
+
+		// Start click handlers
+		go handleVideoCallClick(videoCallItem, peer)
+		go handleScreenShareClick(screenShareItem, peer)
 	}
 
 	log.Printf("Updated peer menu: %d peers", len(connectedPeers))
 }
 
-// handlePeerClick handles clicks on peer menu items
-func handlePeerClick(item *systray.MenuItem, peer *PeerInfo) {
+// handleVideoCallClick handles video call button clicks
+func handleVideoCallClick(item *systray.MenuItem, peer *PeerInfo) {
+	for {
+		<-item.ClickedCh
+		log.Printf("Starting video call with %s (%s)", peer.Hostname, peer.VPNAddress)
+		startVideoCall(peer)
+	}
+}
+
+// handleScreenShareClick handles screen sharing button clicks
+func handleScreenShareClick(item *systray.MenuItem, peer *PeerInfo) {
 	for {
 		<-item.ClickedCh
 		log.Printf("Opening remote access to %s (%s)", peer.Hostname, peer.VPNAddress)
@@ -916,6 +933,36 @@ func openRemoteAccess(vpnIP string) {
 	} else {
 		log.Printf("Opened Screen Sharing to %s", vpnIP)
 	}
+}
+
+// startVideoCall initiates a video call with the specified peer
+func startVideoCall(peer *PeerInfo) {
+	// Initialize video server if not already started
+	if videoServer == nil {
+		videoServer = videocall.NewVideoServer()
+		port, err := videoServer.Start()
+		if err != nil {
+			log.Printf("Failed to start video server: %v", err)
+			dialog.Message("Failed to start video call server\n\nError: %v", err).Title("Video Call Error").Error()
+			return
+		}
+		log.Printf("[VIDEO] Server started on port %d", port)
+	}
+
+	// Get URL for this peer
+	url := videoServer.GetURL(peer.VPNAddress, peer.Hostname)
+
+	// Open browser window with video call UI
+	cmd := exec.Command("open", url)
+	if err := cmd.Start(); err != nil {
+		log.Printf("Failed to open video call window: %v", err)
+		dialog.Message("Failed to open video call window\n\nError: %v", err).Title("Video Call Error").Error()
+	} else {
+		log.Printf("Opened video call with %s (%s)", peer.Hostname, peer.VPNAddress)
+	}
+
+	// TODO: Send VIDEO_CALL_START signal to peer over VPN
+	// This will make their video window auto-open (spontaneous call!)
 }
 
 func onExit() {
