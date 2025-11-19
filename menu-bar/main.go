@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -38,6 +39,9 @@ var (
 	// VPN Configuration - read from environment or use defaults
 	vpnServerHost = getEnv("VPN_SERVER_HOST", "95.217.238.72") // Default server from family-vpn
 	vpnServerPort = getEnv("VPN_SERVER_PORT", "8888")
+
+	// Development mode - disables auto-connect
+	devMode bool
 )
 
 // getEnv reads an environment variable or returns a default value
@@ -228,6 +232,14 @@ func autoUpdater() {
 }
 
 func main() {
+	// Parse command-line flags
+	flag.BoolVar(&devMode, "dev", false, "Development mode - disable auto-connect on startup")
+	flag.Parse()
+
+	if devMode {
+		log.Println("🔧 Development mode enabled - auto-connect disabled")
+	}
+
 	// Load .env file before starting
 	if err := loadEnvFile(); err != nil {
 		log.Printf("Warning: Failed to load .env file: %v", err)
@@ -279,17 +291,21 @@ func onReady() {
 	// Start data updater
 	go dataUpdater()
 
-	// Auto-connect on startup (REQUIRED - not optional)
-	go func() {
-		// Wait for system to initialize (network, etc.)
-		time.Sleep(2 * time.Second)
+	// Auto-connect on startup (unless in dev mode)
+	if !devMode {
+		go func() {
+			// Wait for system to initialize (network, etc.)
+			time.Sleep(2 * time.Second)
 
-		// Try to connect automatically
-		if !vpnState.Connected {
-			log.Println("Auto-connecting to VPN on startup...")
-			toggleVPN()
-		}
-	}()
+			// Try to connect automatically
+			if !vpnState.Connected {
+				log.Println("Auto-connecting to VPN on startup...")
+				toggleVPN()
+			}
+		}()
+	} else {
+		log.Println("⏸️  Auto-connect skipped (dev mode)")
+	}
 
 	// Handle menu clicks
 	go func() {
