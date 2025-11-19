@@ -28,6 +28,8 @@ echo ""
 
 # Build extensions
 echo "Building extensions..."
+
+# Video extension
 cd "$SCRIPT_DIR/extensions/video"
 if [ -f "main.go" ]; then
     go build -o video-extension .
@@ -35,6 +37,16 @@ if [ -f "main.go" ]; then
 else
     echo "⚠️  Video extension source not found (skipping)"
 fi
+
+# SSH extension
+cd "$SCRIPT_DIR/extensions/ssh"
+if [ -f "main.go" ]; then
+    go build -o ssh-extension .
+    echo "✅ SSH extension built successfully"
+else
+    echo "⚠️  SSH extension source not found (skipping)"
+fi
+
 echo ""
 
 echo "=========================================="

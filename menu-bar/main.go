@@ -322,8 +322,12 @@ func main() {
 	// Register video extension
 	videoExtPath := filepath.Join(repoDir, "extensions", "video", "video-extension")
 	extensionManager.RegisterExtension("video", videoExtPath, []string{"--vpn-port", "8889"})
-
 	log.Printf("[EXT] Registered video extension: %s", videoExtPath)
+
+	// Register SSH extension
+	sshExtPath := filepath.Join(repoDir, "extensions", "ssh", "ssh-extension")
+	extensionManager.RegisterExtension("ssh", sshExtPath, []string{"--vpn-port", "8889"})
+	log.Printf("[EXT] Registered SSH extension: %s", sshExtPath)
 
 	// Start auto-updater in background
 	go autoUpdater()
@@ -978,10 +982,12 @@ func updatePeerMenu() {
 		// Add submenu items for this peer
 		videoCallItem := item.AddSubMenuItem("📹 Video Call", "Start video call")
 		screenShareItem := item.AddSubMenuItem("🖥️ Screen Sharing", "Remote desktop access")
+		sshTerminalItem := item.AddSubMenuItem("💻 SSH Terminal", "Open terminal to peer")
 
 		// Start click handlers
 		go handleVideoCallClick(videoCallItem, peer)
 		go handleScreenShareClick(screenShareItem, peer)
+		go handleSSHTerminalClick(sshTerminalItem, peer)
 	}
 
 	log.Printf("Updated peer menu: %d peers", len(connectedPeers))
@@ -1002,6 +1008,36 @@ func handleScreenShareClick(item *systray.MenuItem, peer *PeerInfo) {
 		<-item.ClickedCh
 		log.Printf("Opening remote access to %s (%s)", peer.Hostname, peer.VPNAddress)
 		openRemoteAccess(peer.VPNAddress)
+	}
+}
+
+// handleSSHTerminalClick handles SSH terminal button clicks
+func handleSSHTerminalClick(item *systray.MenuItem, peer *PeerInfo) {
+	for {
+		<-item.ClickedCh
+		log.Printf("Opening SSH terminal to %s (%s)", peer.Hostname, peer.VPNAddress)
+		openSSHTerminal(peer)
+	}
+}
+
+// openSSHTerminal opens an SSH terminal to the peer via SSH extension
+func openSSHTerminal(peer *PeerInfo) {
+	// Trigger SSH extension on localhost:8891
+	url := fmt.Sprintf("http://localhost:8891/ssh?peer=%s&name=%s", peer.VPNAddress, peer.Hostname)
+
+	resp, err := http.Get(url)
+	if err != nil {
+		log.Printf("Failed to trigger SSH extension: %v", err)
+		dialog.Message("Failed to open SSH terminal\n\nMake sure SSH extension is running.\n\nError: %v", err).Title("SSH Error").Error()
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("SSH extension returned error: %s", resp.Status)
+		dialog.Message("SSH extension error: %s", resp.Status).Title("SSH Error").Error()
+	} else {
+		log.Printf("SSH terminal opened to %s", peer.Hostname)
 	}
 }
 
