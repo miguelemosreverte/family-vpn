@@ -677,25 +677,80 @@ func getVersionInfo() string {
 func showAbout() {
 	version := getVersionInfo()
 
-	about := fmt.Sprintf(`🟦🟦🟦 CYAN EDITION 🟦🟦🟦
+	// Create HTML with cyan background and white text
+	html := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {
+            background-color: #00FFFF;
+            color: white;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            padding: 40px;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .container {
+            text-align: center;
+            background-color: #00CED1;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        h1 {
+            font-size: 32px;
+            margin-bottom: 20px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        p {
+            font-size: 16px;
+            line-height: 1.6;
+            margin: 10px 0;
+        }
+        .version {
+            background-color: rgba(255,255,255,0.1);
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Family VPN Manager</h1>
+        <p><strong>CYAN EDITION - PROVES BINARY REBUILD!</strong></p>
+        <p>Secure, encrypted VPN built from scratch</p>
+        <p>with AES-256-GCM encryption.</p>
+        <p><strong>Server:</strong> Helsinki, Finland</p>
+        <p><strong>Encryption:</strong> AES-256-GCM</p>
+        <div class="version">%s</div>
+        <p>Made with love for the family. ❤️</p>
+        <p>💕 2025</p>
+    </div>
+</body>
+</html>`, version)
 
-Family VPN Manager
+	// Write HTML to temp file
+	tmpfile, err := os.CreateTemp("", "about-*.html")
+	if err != nil {
+		log.Printf("Failed to create temp file: %v", err)
+		return
+	}
+	defer os.Remove(tmpfile.Name())
 
-🔵 Secure, encrypted VPN built from scratch
-🔵 with AES-256-GCM encryption.
+	if _, err := tmpfile.WriteString(html); err != nil {
+		log.Printf("Failed to write HTML: %v", err)
+		return
+	}
+	tmpfile.Close()
 
-Server: Helsinki, Finland
-Encryption: AES-256-GCM
-
-%s
-
-Made with love for the family. ❤️
-
-🟦 This proves the binary was rebuilt! 🟦
-
-💕 2025`, version)
-
-	dialog.Message(about).Title("🔵 About Family VPN - CYAN EDITION 🔵").Info()
+	// Open in default browser
+	exec.Command("open", tmpfile.Name()).Start()
 }
 
 func getConnectedIcon() []byte {
