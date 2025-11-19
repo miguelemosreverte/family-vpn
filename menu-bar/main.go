@@ -675,6 +675,7 @@ func getVersionInfo() string {
 }
 
 func showAbout() {
+	log.Println("showAbout() called - generating HTML...")
 	version := getVersionInfo()
 
 	// Create HTML with cyan background and white text
@@ -735,13 +736,13 @@ func showAbout() {
 </body>
 </html>`, version)
 
-	// Write HTML to temp file
+	// Write HTML to temp file (don't delete it - let OS clean up /tmp)
 	tmpfile, err := os.CreateTemp("", "about-*.html")
 	if err != nil {
 		log.Printf("Failed to create temp file: %v", err)
 		return
 	}
-	defer os.Remove(tmpfile.Name())
+	// Note: Not removing file so browser has time to load it
 
 	if _, err := tmpfile.WriteString(html); err != nil {
 		log.Printf("Failed to write HTML: %v", err)
@@ -750,7 +751,13 @@ func showAbout() {
 	tmpfile.Close()
 
 	// Open in default browser
-	exec.Command("open", tmpfile.Name()).Start()
+	log.Printf("Opening About page: %s", tmpfile.Name())
+	cmd := exec.Command("open", tmpfile.Name())
+	if err := cmd.Start(); err != nil {
+		log.Printf("Failed to open browser: %v", err)
+	} else {
+		log.Println("Browser opened successfully")
+	}
 }
 
 func getConnectedIcon() []byte {
