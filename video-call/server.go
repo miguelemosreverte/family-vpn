@@ -39,12 +39,17 @@ func NewVideoServer() *VideoServer {
 	}
 }
 
-// Start starts the HTTP server on a random available port
+// Start starts the HTTP server on port 8890 (or random if occupied)
 func (s *VideoServer) Start() (int, error) {
-	// Listen on random available port
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	// Try fixed port 8890 first for consistency with menu-bar
+	listener, err := net.Listen("tcp", "127.0.0.1:8890")
 	if err != nil {
-		return 0, fmt.Errorf("failed to start listener: %v", err)
+		// If 8890 is occupied, fall back to random port
+		log.Printf("[VIDEO] Port 8890 occupied, trying random port...")
+		listener, err = net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return 0, fmt.Errorf("failed to start listener: %v", err)
+		}
 	}
 	s.listener = listener
 	s.port = listener.Addr().(*net.TCPAddr).Port
