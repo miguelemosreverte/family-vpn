@@ -2,6 +2,12 @@
 
 Secure, encrypted VPN built from scratch with AES-256-GCM encryption.
 
+## ⚠️ DEPLOYING CHANGES? → [READ THIS FIRST: DEPLOY-README.md](DEPLOY-README.md)
+
+**ALWAYS use `./deploy.sh` after code changes - NEVER manually restart VPN components!**
+
+---
+
 ## Features
 
 - 🖥️ **macOS Menu Bar App** - One-click VPN toggle with auto-connect on login
