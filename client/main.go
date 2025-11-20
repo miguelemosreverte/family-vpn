@@ -45,7 +45,7 @@ func getRealUserHomeDir() (string, error) {
 	}
 
 	// Fallback to standard home directory
-	return getRealUserHomeDir()
+	return os.UserHomeDir()
 }
 
 // PeerInfo represents a connected VPN peer
