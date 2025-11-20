@@ -4,10 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"log"
-	"os"
 	"os/exec"
-	"path/filepath"
-	"time"
 
 	"github.com/miguelemosreverte/family-vpn/extensions/framework"
 	"github.com/miguelemosreverte/family-vpn/ipc"
@@ -73,40 +70,23 @@ func (e *VideoExtension) Health() bool {
 	return e.vpnClient.Health() == nil
 }
 
-// monitorIncomingSignals monitors for incoming video call signals
+// monitorIncomingSignals monitors for incoming video call signals via IPC polling
 func (e *VideoExtension) monitorIncomingSignals() {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		log.Printf("[VIDEO] Failed to get home dir: %v", err)
-		return
-	}
+	log.Printf("[VIDEO] Subscribing to video signals via IPC")
 
-	signalFile := filepath.Join(homeDir, ".family-vpn-video-signal")
-	lastContent := ""
-
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		data, err := os.ReadFile(signalFile)
-		if err != nil {
-			time.Sleep(100 * time.Millisecond)
-			continue
+	// Use IPC polling instead of file monitoring
+	err := e.vpnClient.SubscribeToSignals("video", func(peerIP string, data []byte) {
+		if len(data) == 0 {
+			return
 		}
 
-		content := string(data)
-		if content == lastContent || content == "" {
-			continue
-		}
-		lastContent = content
-
-		log.Printf("[VIDEO] Received incoming video signal")
+		log.Printf("[VIDEO] Received incoming video signal from %s", peerIP)
 
 		// Parse the signal
 		var signal map[string]interface{}
 		if err := json.Unmarshal(data, &signal); err != nil {
 			log.Printf("[VIDEO] Failed to parse signal: %v", err)
-			continue
+			return
 		}
 
 		// Handle different signal types
@@ -127,9 +107,10 @@ func (e *VideoExtension) monitorIncomingSignals() {
 				e.videoServer.HandlePeerMessage(fromIP, data)
 			}
 		}
+	})
 
-		// Clear the file
-		os.Remove(signalFile)
+	if err != nil {
+		log.Printf("[VIDEO] Error subscribing to signals: %v", err)
 	}
 }
 
