@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/songgao/water"
 )
 
@@ -56,6 +57,10 @@ type VPNServer struct {
 	// Peer-to-peer routing
 	peerConnections map[string]net.Conn // key: VPN IP address, value: client connection
 	peerEncryption  map[string]bool     // key: VPN IP address, value: wants encryption
+	// WebSocket support for real-time signaling
+	wsClients      map[string]*websocket.Conn // key: VPN IP address, value: WebSocket connection
+	wsClientsMutex sync.RWMutex
+	wsUpgrader     websocket.Upgrader
 }
 
 func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
@@ -68,6 +73,10 @@ func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
 		peerConnections: make(map[string]net.Conn),
 		peerEncryption:  make(map[string]bool),
 		nextClientIP:    2, // Start from 10.8.0.2 (10.8.0.1 is server)
+		wsClients:       make(map[string]*websocket.Conn),
+		wsUpgrader: websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool { return true }, // Allow all origins for VPN clients
+		},
 	}
 }
 
@@ -291,7 +300,32 @@ func (s *VPNServer) broadcastControlMessage(command string) {
 }
 
 // sendToPeer sends a control message to a specific peer
+// Prefers WebSocket if available, falls back to control message
 func (s *VPNServer) sendToPeer(peerIP, command string) error {
+	// Try WebSocket first
+	s.wsClientsMutex.RLock()
+	wsConn, hasWS := s.wsClients[peerIP]
+	s.wsClientsMutex.RUnlock()
+
+	if hasWS {
+		// Send via WebSocket
+		message := map[string]interface{}{
+			"type": "signal",
+			"data": command,
+		}
+		if err := wsConn.WriteJSON(message); err != nil {
+			log.Printf("[WS] Failed to send to %s via WebSocket: %v, falling back to control message", peerIP, err)
+			// Remove dead WebSocket connection
+			s.wsClientsMutex.Lock()
+			delete(s.wsClients, peerIP)
+			s.wsClientsMutex.Unlock()
+		} else {
+			log.Printf("[WS] Sent signal to peer %s via WebSocket", peerIP)
+			return nil
+		}
+	}
+
+	// Fallback to control message (legacy)
 	s.peersMutex.RLock()
 	conn, exists := s.peerConnections[peerIP]
 	wantsEncryption, encryptExists := s.peerEncryption[peerIP]
@@ -301,7 +335,7 @@ func (s *VPNServer) sendToPeer(peerIP, command string) error {
 		return fmt.Errorf("peer %s not found or not connected", peerIP)
 	}
 
-	log.Printf("[CONTROL] Sending '%s' to peer %s", command, peerIP)
+	log.Printf("[CONTROL] Sending '%s' to peer %s (legacy)", command, peerIP)
 
 	// Create control message packet
 	message := append([]byte("CTRL:"), []byte(command)...)
@@ -701,6 +735,50 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "OK")
 }
 
+// handleWebSocket handles WebSocket connections from VPN clients for real-time signaling
+func (s *VPNServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	// Get VPN IP from query parameter
+	vpnIP := r.URL.Query().Get("vpn_ip")
+	if vpnIP == "" {
+		http.Error(w, "Missing vpn_ip parameter", http.StatusBadRequest)
+		return
+	}
+
+	// Upgrade connection to WebSocket
+	conn, err := s.wsUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("[WS] Failed to upgrade connection for %s: %v", vpnIP, err)
+		return
+	}
+
+	// Register WebSocket connection
+	s.wsClientsMutex.Lock()
+	s.wsClients[vpnIP] = conn
+	s.wsClientsMutex.Unlock()
+
+	log.Printf("[WS] Client %s connected via WebSocket", vpnIP)
+
+	// Keep connection alive and handle disconnection
+	defer func() {
+		s.wsClientsMutex.Lock()
+		delete(s.wsClients, vpnIP)
+		s.wsClientsMutex.Unlock()
+		conn.Close()
+		log.Printf("[WS] Client %s disconnected from WebSocket", vpnIP)
+	}()
+
+	// Read messages (mostly just keep-alive pings)
+	for {
+		_, _, err := conn.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("[WS] Read error from %s: %v", vpnIP, err)
+			}
+			break
+		}
+	}
+}
+
 // updateInitHandler triggers server and client updates
 func updateInitHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
@@ -794,13 +872,15 @@ func main() {
 
 	globalServer = server
 
-	// Start HTTP server for webhooks and update endpoint
+	// Start HTTP server for webhooks, updates, and WebSocket signaling
 	http.HandleFunc("/webhook", webhookHandler)
 	http.HandleFunc("/update/init", updateInitHandler)
+	http.HandleFunc("/ws", server.handleWebSocket)
 	go func() {
 		log.Printf("Starting HTTP server on port %s", *webhookPort)
 		log.Printf("  - POST /webhook - GitHub webhook endpoint")
 		log.Printf("  - POST /update/init - Trigger server and client updates")
+		log.Printf("  - GET  /ws - WebSocket endpoint for real-time signaling")
 		if err := http.ListenAndServe(":"+*webhookPort, nil); err != nil {
 			log.Fatalf("HTTP server failed: %v", err)
 		}

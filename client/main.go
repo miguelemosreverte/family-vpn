@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/songgao/water"
 )
 
@@ -70,6 +71,9 @@ type VPNClient struct {
 	assignedIP   string // VPN IP assigned by server
 	peers        []*PeerInfo // List of connected peers
 	peersMutex   sync.RWMutex
+	// WebSocket for real-time signaling
+	wsConn     *websocket.Conn
+	ipcServer  *IPCServer // Reference to IPC server for signal delivery
 }
 
 func NewVPNClient(serverAddr string, encryption bool, key []byte, noTimeout bool, useTLS bool) *VPNClient {
@@ -449,9 +453,13 @@ func (c *VPNClient) Connect() error {
 
 	// Start IPC server for extensions
 	ipcServer := NewIPCServer(8889, c)
+	c.ipcServer = ipcServer // Store reference for WebSocket signal delivery
 	if err := ipcServer.Start(); err != nil {
 		log.Printf("[IPC] Failed to start IPC server: %v", err)
 	}
+
+	// Connect to WebSocket for real-time signaling
+	go c.connectWebSocket()
 
 	// TUN -> Server (egress)
 	go func() {
@@ -786,18 +794,78 @@ func (c *VPNClient) writePeerListToFile() {
 
 // handleVideoCallMessage handles incoming video call signaling from peers
 func (c *VPNClient) handleVideoCallMessage(data string) {
-	homeDir, err := getRealUserHomeDir()
+	// Use IPC queue for real-time signal delivery to extensions
+	if c.ipcServer != nil {
+		log.Printf("[VIDEO] Queueing video signal via IPC")
+		c.ipcServer.QueueSignal("video", "", []byte(data))
+	} else {
+		log.Printf("[VIDEO] Warning: IPC server not available, cannot deliver signal")
+	}
+}
+
+// connectWebSocket connects to the server's WebSocket endpoint for real-time signaling
+func (c *VPNClient) connectWebSocket() {
+	// Extract server host from serverAddr
+	serverHost, _, err := net.SplitHostPort(c.serverAddr)
 	if err != nil {
-		log.Printf("[VIDEO] Failed to get home dir: %v", err)
+		log.Printf("[WS] Failed to parse server address: %v", err)
 		return
 	}
 
-	// Write video call signal to file for menu bar app to detect
-	signalFile := filepath.Join(homeDir, ".family-vpn-video-signal")
-	if err := os.WriteFile(signalFile, []byte(data), 0644); err != nil {
-		log.Printf("[VIDEO] Failed to write video signal: %v", err)
-	} else {
-		log.Printf("[VIDEO] Wrote video call signal to %s", signalFile)
+	// Connect to WebSocket endpoint (port 9000 for HTTP/WebSocket server)
+	wsURL := fmt.Sprintf("ws://%s:9000/ws?vpn_ip=%s", serverHost, c.assignedIP)
+	log.Printf("[WS] Connecting to %s", wsURL)
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		log.Printf("[WS] Failed to connect: %v", err)
+		log.Printf("[WS] Will fall back to legacy control messages")
+		return
+	}
+
+	c.wsConn = conn
+	log.Printf("[WS] Connected successfully for real-time signaling")
+
+	// Handle incoming WebSocket messages
+	go c.handleWebSocketMessages()
+}
+
+// handleWebSocketMessages receives and processes WebSocket messages from the server
+func (c *VPNClient) handleWebSocketMessages() {
+	defer func() {
+		if c.wsConn != nil {
+			c.wsConn.Close()
+			c.wsConn = nil
+		}
+		log.Printf("[WS] WebSocket connection closed")
+	}()
+
+	for c.enabled {
+		var msg map[string]interface{}
+		err := c.wsConn.ReadJSON(&msg)
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("[WS] Read error: %v", err)
+			}
+			break
+		}
+
+		msgType, _ := msg["type"].(string)
+		data, _ := msg["data"].(string)
+
+		log.Printf("[WS] Received message type: %s", msgType)
+
+		// Route signal based on type
+		if msgType == "signal" {
+			// Parse signal data to determine extension
+			if strings.HasPrefix(data, "VIDEO_CALL:") {
+				videoData := data[11:] // Skip "VIDEO_CALL:" prefix
+				log.Printf("[WS] Routing video signal to video extension via IPC")
+				if c.ipcServer != nil {
+					c.ipcServer.QueueSignal("video", "", []byte(videoData))
+				}
+			}
+		}
 	}
 }
 
