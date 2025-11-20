@@ -5,7 +5,7 @@ set -e
 echo "Building VPN client..."
 
 cd client
-go build -o vpn-client main.go
+go build -o vpn-client .
 
 echo "Build complete! Binary: client/vpn-client"
 echo ""
