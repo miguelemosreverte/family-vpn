@@ -86,7 +86,7 @@ func (s *IPCServer) handleSendSignal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Write to outgoing signal file (same mechanism as before)
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := getRealUserHomeDir()
 	if err != nil {
 		http.Error(w, "Failed to get home dir", http.StatusInternalServerError)
 		return

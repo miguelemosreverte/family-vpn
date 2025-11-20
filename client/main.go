@@ -33,6 +33,20 @@ const (
 	SERVER_IP  = "10.8.0.1"
 )
 
+// getRealUserHomeDir returns the real user's home directory, even when running as root via sudo
+func getRealUserHomeDir() (string, error) {
+	// Check if running as root via sudo
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		// Running via sudo - get the original user's home directory
+		if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+			return filepath.Join("/Users", sudoUser), nil // macOS
+		}
+	}
+
+	// Fallback to standard home directory
+	return getRealUserHomeDir()
+}
+
 // PeerInfo represents a connected VPN peer
 type PeerInfo struct {
 	Hostname    string `json:"hostname"`
@@ -723,7 +737,7 @@ func (c *VPNClient) handleControlMessage(message []byte) {
 	if strings.HasPrefix(command, "UPDATE_") {
 		log.Printf("[CONTROL] Update signal received: %s", command)
 		// Write component-specific update signal that menu bar app will detect
-		homeDir, err := os.UserHomeDir()
+		homeDir, err := getRealUserHomeDir()
 		if err != nil {
 			log.Printf("[CONTROL] Failed to get home dir: %v", err)
 			return
@@ -746,7 +760,7 @@ func (c *VPNClient) handleControlMessage(message []byte) {
 
 // writePeerListToFile writes the peer list to a file for the menu bar app
 func (c *VPNClient) writePeerListToFile() {
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := getRealUserHomeDir()
 	if err != nil {
 		log.Printf("[PEERS] Failed to get home dir: %v", err)
 		return
@@ -772,7 +786,7 @@ func (c *VPNClient) writePeerListToFile() {
 
 // handleVideoCallMessage handles incoming video call signaling from peers
 func (c *VPNClient) handleVideoCallMessage(data string) {
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := getRealUserHomeDir()
 	if err != nil {
 		log.Printf("[VIDEO] Failed to get home dir: %v", err)
 		return
@@ -789,7 +803,7 @@ func (c *VPNClient) handleVideoCallMessage(data string) {
 
 // monitorOutgoingVideoSignals monitors for outgoing video signals and sends them via VPN
 func (c *VPNClient) monitorOutgoingVideoSignals(conn net.Conn) {
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := getRealUserHomeDir()
 	if err != nil {
 		log.Printf("[VIDEO] Failed to get home dir: %v", err)
 		return
