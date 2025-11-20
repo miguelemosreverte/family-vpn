@@ -188,6 +188,55 @@ func performUpdate() error {
 	return nil
 }
 
+// performVPNUpdate rebuilds VPN client and menu-bar app for full system updates
+func performVPNUpdate() error {
+	log.Println("🔄 VPN core update! Starting full rebuild...")
+
+	// Get paths
+	exePath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	repoDir := filepath.Dir(filepath.Dir(exePath))
+
+	// Pull latest changes
+	log.Println("Pulling latest changes from GitHub...")
+	pullCmd := exec.Command("git", "-C", repoDir, "pull", "origin", "main")
+	if output, err := pullCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git pull failed: %v\n%s", err, output)
+	}
+
+	// Rebuild VPN client
+	log.Println("Rebuilding VPN client...")
+	buildClientScript := filepath.Join(repoDir, "build-client.sh")
+	buildClientCmd := exec.Command(buildClientScript)
+	buildClientCmd.Dir = repoDir
+	if output, err := buildClientCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("VPN client build failed: %v\n%s", err, output)
+	}
+
+	// Rebuild menu-bar app
+	log.Println("Rebuilding menu bar app...")
+	buildScript := filepath.Join(repoDir, "build-menubar.sh")
+	buildCmd := exec.Command(buildScript)
+	buildCmd.Dir = repoDir
+	if output, err := buildCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("menu-bar build failed: %v\n%s", err, output)
+	}
+
+	log.Println("✅ Full update complete! Restarting app...")
+
+	// Restart the app (which will start new VPN client)
+	restartCmd := exec.Command(exePath)
+	if err := restartCmd.Start(); err != nil {
+		return fmt.Errorf("failed to restart: %v", err)
+	}
+
+	// Exit current process
+	os.Exit(0)
+	return nil
+}
+
 // watchUpdateSignal watches for update signal file from VPN client
 func watchUpdateSignal() {
 	homeDir, err := os.UserHomeDir()
@@ -239,8 +288,8 @@ func watchUpdateSignal() {
 			if extensionManager != nil {
 				extensionManager.StopAll()
 			}
-			// Perform full update
-			if err := performUpdate(); err != nil {
+			// Perform full VPN update (rebuilds VPN client + menu-bar)
+			if err := performVPNUpdate(); err != nil {
 				log.Printf("[UPDATE] Failed to update: %v", err)
 			}
 
