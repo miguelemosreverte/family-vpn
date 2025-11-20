@@ -26,7 +26,7 @@ type SSHExtension struct {
 // NewSSHExtension creates a new SSH extension
 func NewSSHExtension(vpnPort int) *SSHExtension {
 	return &SSHExtension{
-		ExtensionBase: framework.NewExtensionBase("ssh", "1.0.0"),
+		ExtensionBase: framework.NewExtensionBase("ssh", "1.0.1"), // Test: component-aware deployment
 		vpnClient:     ipc.NewVPNClient(vpnPort),
 		port:          8891, // Different from video (8890)
 	}
