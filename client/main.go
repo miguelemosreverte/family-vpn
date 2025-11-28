@@ -74,6 +74,8 @@ type VPNClient struct {
 	// WebSocket for real-time signaling
 	wsConn     *websocket.Conn
 	ipcServer  *IPCServer // Reference to IPC server for signal delivery
+	// IPv6 leak prevention
+	ipv6WasEnabled bool // Track if IPv6 was enabled before VPN connected
 }
 
 func NewVPNClient(serverAddr string, encryption bool, key []byte, noTimeout bool, useTLS bool) *VPNClient {
@@ -220,8 +222,27 @@ func (c *VPNClient) routeAllTraffic() error {
 		} else {
 			log.Println("DNS configured: 1.1.1.1 (Cloudflare), 8.8.8.8 (Google) through VPN")
 		}
+
+		// Prevent IPv6 leaks by disabling IPv6 on Wi-Fi
+		// First, check if IPv6 is currently enabled
+		cmd = exec.Command("networksetup", "-getinfo", "Wi-Fi")
+		output, err := cmd.Output()
+		if err == nil {
+			outputStr := string(output)
+			// Check if IPv6 is set to "Automatic" or "Manual" (enabled states)
+			c.ipv6WasEnabled = strings.Contains(outputStr, "IPv6: Automatic") ||
+			                   strings.Contains(outputStr, "IPv6: Manual")
+		}
+
+		// Disable IPv6 to prevent leaks
+		cmd = exec.Command("networksetup", "-setv6off", "Wi-Fi")
+		if err := cmd.Run(); err != nil {
+			log.Printf("Warning: failed to disable IPv6: %v (IPv6 may leak)", err)
+		} else {
+			log.Println("IPv6 disabled to prevent location leaks")
+		}
 	} else {
-		// Linux: Modify /etc/resolv.conf
+		// Linux: Modify /etc/resolv.conf and disable IPv6
 		// TODO: Implement for Linux if needed
 	}
 
@@ -251,6 +272,16 @@ func (c *VPNClient) restoreRouting() error {
 			log.Printf("Warning: failed to restore DNS: %v", err)
 		} else {
 			log.Println("DNS restored to automatic (DHCP)")
+		}
+
+		// Restore IPv6 if it was enabled before VPN connected
+		if c.ipv6WasEnabled {
+			cmd = exec.Command("networksetup", "-setv6automatic", "Wi-Fi")
+			if err := cmd.Run(); err != nil {
+				log.Printf("Warning: failed to restore IPv6: %v", err)
+			} else {
+				log.Println("IPv6 restored to automatic")
+			}
 		}
 	} else {
 		// Linux routing restoration
