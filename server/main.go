@@ -77,9 +77,26 @@ type VPNServer struct {
 	// Client version tracking
 	clientVersions      map[string]string // key: VPN IP, value: Git commit
 	clientVersionsMutex sync.RWMutex
+	// Server's own Git commit version
+	gitCommit string
+}
+
+// getGitCommit returns the current Git commit hash for the server
+func getGitCommit() string {
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = "/root/family-vpn" // Server runs from /root/family-vpn
+	output, err := cmd.Output()
+	if err != nil {
+		log.Printf("[VERSION] Failed to get Git commit: %v", err)
+		return "unknown"
+	}
+	return strings.TrimSpace(string(output))
 }
 
 func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
+	commit := getGitCommit()
+	log.Printf("[VERSION] Server running Git commit: %s", commit)
+
 	return &VPNServer{
 		listenAddr:      listenAddr,
 		encryption:      encryption,
@@ -96,6 +113,7 @@ func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
 		pingHistory:    make([]PingRecord, 0, 2880),
 		maxPingHistory: 2880, // 24 hours at 30-second intervals
 		clientVersions: make(map[string]string),
+		gitCommit:      commit,
 	}
 }
 
@@ -849,14 +867,15 @@ func (s *VPNServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			s.clientVersionsMutex.RUnlock()
 
 			response := map[string]interface{}{
-				"type":     "client_versions",
-				"versions": versions,
+				"type":           "client_versions",
+				"versions":       versions,
+				"server_version": s.gitCommit,
 			}
 
 			if err := conn.WriteJSON(response); err != nil {
 				log.Printf("[WS] Failed to send client versions to %s: %v", vpnIP, err)
 			} else {
-				log.Printf("[WS] Sent %d client versions to %s", len(versions), vpnIP)
+				log.Printf("[WS] Sent %d client versions (server: %s) to %s", len(versions), s.gitCommit[:8], vpnIP)
 			}
 		}
 	}
