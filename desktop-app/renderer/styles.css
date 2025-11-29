@@ -124,6 +124,20 @@ body.dark-mode .theme-toggle .icon-moon {
     background: #e0e0e0;
 }
 
+.refresh-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.refresh-btn.loading {
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
 /* Main Content - Newspaper layout */
 main {
     flex: 1;
@@ -372,6 +386,28 @@ section h2 {
 .use-percent.critical {
     background: #000000;
     color: #ffffff;
+}
+
+/* Loading State */
+.loading-message {
+    background: #ffffff;
+    border: 2px solid #000000;
+    padding: 40px;
+    text-align: center;
+    grid-column: 1 / -1;
+}
+
+.loading-message h3 {
+    font-size: 20px;
+    margin-bottom: 10px;
+    color: #000000;
+    font-family: "Helvetica Neue", Arial, sans-serif;
+}
+
+.loading-message p {
+    font-size: 14px;
+    color: #606060;
+    font-family: "Georgia", serif;
 }
 
 /* Error States */
@@ -642,4 +678,17 @@ body.dark-mode ::-webkit-scrollbar-thumb {
 
 body.dark-mode ::-webkit-scrollbar-thumb:hover {
     background: #d0d0d0;
+}
+
+body.dark-mode .loading-message {
+    background: #1a1a1a;
+    border: 2px solid #ffffff;
+}
+
+body.dark-mode .loading-message h3 {
+    color: #ffffff;
+}
+
+body.dark-mode .loading-message p {
+    color: #a0a0a0;
 }

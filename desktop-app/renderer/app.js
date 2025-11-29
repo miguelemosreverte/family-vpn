@@ -22,6 +22,9 @@ async function init() {
 // Load all data
 async function loadData() {
     try {
+        // Show loading state immediately
+        showLoadingState();
+
         // Get VPN peers
         peers = await window.vpnAPI.getPeers();
         console.log(`✅ Loaded ${peers.length} peers`);
@@ -29,19 +32,15 @@ async function loadData() {
         // Update header
         document.getElementById('client-count').textContent = peers.length;
 
-        // Get disk usage for each peer
-        diskData = [];
-        for (const peer of peers) {
-            const usage = await window.vpnAPI.getDiskUsage(peer);
-            diskData.push(usage);
-        }
+        // Get disk usage for each peer (in parallel for speed)
+        diskData = await Promise.all(
+            peers.map(peer => window.vpnAPI.getDiskUsage(peer))
+        );
 
-        // Get volumes for each peer
-        volumeData = [];
-        for (const peer of peers) {
-            const volumes = await window.vpnAPI.getVolumes(peer);
-            volumeData.push(volumes);
-        }
+        // Get volumes for each peer (in parallel for speed)
+        volumeData = await Promise.all(
+            peers.map(peer => window.vpnAPI.getVolumes(peer))
+        );
 
         // Render UI
         renderClients();
@@ -53,6 +52,17 @@ async function loadData() {
         console.error('❌ Failed to load data:', error);
         showError('Failed to load VPN data. Make sure VPN is connected.');
     }
+}
+
+// Show loading state
+function showLoadingState() {
+    const grid = document.getElementById('clients-grid');
+    grid.innerHTML = `
+        <div class="loading-message">
+            <h3>⏳ Loading VPN clients...</h3>
+            <p>Connecting to peers via SSH...</p>
+        </div>
+    `;
 }
 
 // Render client cards
@@ -218,9 +228,20 @@ function showError(message) {
 
 // Setup event listeners
 function setupEventListeners() {
-    document.getElementById('refresh-btn').addEventListener('click', () => {
+    const refreshBtn = document.getElementById('refresh-btn');
+
+    refreshBtn.addEventListener('click', () => {
         console.log('🔄 Manual refresh triggered');
-        loadData();
+        // Immediate visual feedback
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = '⏳ Loading...';
+        refreshBtn.classList.add('loading');
+
+        loadData().finally(() => {
+            refreshBtn.disabled = false;
+            refreshBtn.textContent = '🔄 Refresh';
+            refreshBtn.classList.remove('loading');
+        });
     });
 
     // Theme toggle
