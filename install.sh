@@ -76,7 +76,7 @@ echo "-------------------------"
 cd client
 if [ ! -f "vpn-client" ]; then
     echo "Building VPN client..."
-    GOTOOLCHAIN=local go build -o vpn-client main.go 2>/dev/null || go build -o vpn-client main.go
+    GOTOOLCHAIN=local go build -o vpn-client . 2>/dev/null || go build -o vpn-client .
     if [ $? -ne 0 ]; then
         echo -e "${RED}❌ Failed to build VPN client${NC}"
         exit 1
@@ -96,7 +96,7 @@ cd menu-bar
 if [ ! -f "family-vpn-menubar" ]; then
     echo "Building menu bar app..."
     go mod download 2>/dev/null || true
-    GOTOOLCHAIN=local go build -o family-vpn-menubar main.go extension_manager.go 2>/dev/null || go build -o family-vpn-menubar main.go extension_manager.go
+    GOTOOLCHAIN=local go build -o family-vpn-menubar . 2>/dev/null || go build -o family-vpn-menubar .
     if [ $? -ne 0 ]; then
         echo -e "${RED}❌ Failed to build menu bar app${NC}"
         exit 1
