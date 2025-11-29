@@ -899,7 +899,12 @@ func (c *VPNClient) reportVersion() {
 	if err != nil {
 		log.Printf("[VERSION] Failed to send version report: %v", err)
 	} else {
-		log.Printf("[VERSION] Reported version %s to server", commit[:8])
+		// Safe slice: use min of 8 or actual length
+		displayCommit := commit
+		if len(commit) > 8 {
+			displayCommit = commit[:8]
+		}
+		log.Printf("[VERSION] Reported version %s to server", displayCommit)
 	}
 }
 
