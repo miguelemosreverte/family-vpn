@@ -4,6 +4,7 @@
 #
 # SAFETY FIRST: This script restores network routing BEFORE removing
 # any VPN components to prevent leaving the machine without internet.
+# Fully automated - reads sudo password from .env file
 
 echo "🗑️  Family VPN Uninstall Script"
 echo "================================"
@@ -21,6 +22,25 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 echo "📍 Working directory: $SCRIPT_DIR"
 echo ""
 
+# Load environment variables from .env file
+if [ -f "$SCRIPT_DIR/.env" ]; then
+    export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
+    echo -e "${GREEN}✓ Loaded configuration from .env${NC}"
+else
+    echo -e "${YELLOW}⚠️  No .env file found - sudo operations may require manual password entry${NC}"
+fi
+
+# Helper function to run sudo commands with password from .env
+run_sudo() {
+    if [ -n "$SUDO_PASSWORD" ]; then
+        echo "$SUDO_PASSWORD" | sudo -S "$@" 2>/dev/null
+    else
+        sudo "$@"
+    fi
+}
+
+echo ""
+
 # =============================================================================
 # STEP 1: RESTORE NETWORK ROUTING FIRST (SAFETY CRITICAL)
 # =============================================================================
@@ -36,12 +56,12 @@ restore_routing() {
         # These are routes that go through the normal gateway to reach VPN server
         VPN_SERVER_ROUTES=$(netstat -rn -f inet | grep -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\s+192\.168\." | awk '{print $1}')
         for route in $VPN_SERVER_ROUTES; do
-            sudo route -n delete "$route" 2>/dev/null && echo -e "${GREEN}✓ Removed VPN server route: $route${NC}"
+            run_sudo route -n delete "$route" && echo -e "${GREEN}✓ Removed VPN server route: $route${NC}"
         done
 
         # Remove any routes through utun interfaces
         for utun in $(ifconfig 2>/dev/null | grep "^utun" | cut -d: -f1); do
-            sudo route -n delete default -ifscope $utun 2>/dev/null && echo -e "${GREEN}✓ Removed default route via $utun${NC}"
+            run_sudo route -n delete default -ifscope $utun && echo -e "${GREEN}✓ Removed default route via $utun${NC}"
         done
 
         # Check if we have a working default route
@@ -65,7 +85,7 @@ restore_routing() {
             fi
 
             if [ -n "$ROUTER" ]; then
-                sudo route -n add default "$ROUTER" 2>/dev/null && echo -e "${GREEN}✓ Restored default route via $ROUTER${NC}"
+                run_sudo route -n add default "$ROUTER" && echo -e "${GREEN}✓ Restored default route via $ROUTER${NC}"
             else
                 # Last resort: restart Wi-Fi to get fresh DHCP
                 echo -e "${YELLOW}⚠️  Restarting Wi-Fi to restore routing...${NC}"
@@ -80,11 +100,11 @@ restore_routing() {
         fi
 
         # Restore IPv6
-        sudo networksetup -setv6automatic Wi-Fi 2>/dev/null && echo -e "${GREEN}✓ IPv6 restored${NC}"
+        run_sudo networksetup -setv6automatic Wi-Fi && echo -e "${GREEN}✓ IPv6 restored${NC}"
 
     else
         # Linux
-        sudo ip route del default dev tun0 2>/dev/null
+        run_sudo ip route del default dev tun0
         echo -e "${GREEN}✓ Removed any tun0 default route${NC}"
     fi
 }
@@ -120,7 +140,7 @@ echo "--------------------------------------"
 
 # Remove desktop app
 if [ -d "/Applications/Family VPN.app" ]; then
-    sudo rm -rf "/Applications/Family VPN.app"
+    run_sudo rm -rf "/Applications/Family VPN.app"
     echo -e "${GREEN}✓ Removed /Applications/Family VPN.app${NC}"
 else
     echo -e "${YELLOW}• Desktop app not installed${NC}"
@@ -128,7 +148,7 @@ fi
 
 # Remove menu bar app
 if [ -f "/usr/local/bin/family-vpn-menubar" ]; then
-    sudo rm -f "/usr/local/bin/family-vpn-menubar"
+    run_sudo rm -f "/usr/local/bin/family-vpn-menubar"
     echo -e "${GREEN}✓ Removed /usr/local/bin/family-vpn-menubar${NC}"
 else
     echo -e "${YELLOW}• Menu bar app not installed${NC}"
@@ -136,7 +156,7 @@ fi
 
 # Remove VPN client
 if [ -f "/usr/local/bin/family-vpn-client" ]; then
-    sudo rm -f "/usr/local/bin/family-vpn-client"
+    run_sudo rm -f "/usr/local/bin/family-vpn-client"
     echo -e "${GREEN}✓ Removed /usr/local/bin/family-vpn-client${NC}"
 else
     echo -e "${YELLOW}• VPN client not installed${NC}"
@@ -144,7 +164,7 @@ fi
 
 # Remove routing fix script
 if [ -f "/usr/local/bin/family-vpn-fix-routing" ]; then
-    sudo rm -f "/usr/local/bin/family-vpn-fix-routing"
+    run_sudo rm -f "/usr/local/bin/family-vpn-fix-routing"
     echo -e "${GREEN}✓ Removed /usr/local/bin/family-vpn-fix-routing${NC}"
 else
     echo -e "${YELLOW}• Routing fix script not installed${NC}"

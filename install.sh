@@ -1,6 +1,7 @@
 #!/bin/bash
 # Family VPN Installation Script
 # Supports fresh installation and updates on existing installations
+# Fully automated - reads sudo password from .env file
 
 set -e
 
@@ -26,6 +27,25 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
 echo "📍 Working directory: $SCRIPT_DIR"
+echo ""
+
+# Load environment variables from .env file
+if [ -f "$SCRIPT_DIR/.env" ]; then
+    export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
+    echo -e "${GREEN}✓ Loaded configuration from .env${NC}"
+else
+    echo -e "${YELLOW}⚠️  No .env file found - sudo operations may require manual password entry${NC}"
+fi
+
+# Helper function to run sudo commands with password from .env
+run_sudo() {
+    if [ -n "$SUDO_PASSWORD" ]; then
+        echo "$SUDO_PASSWORD" | sudo -S "$@" 2>/dev/null
+    else
+        sudo "$@"
+    fi
+}
+
 echo ""
 
 # Check dependencies
@@ -181,38 +201,38 @@ echo "-----------------------------"
 DESKTOP_APP_PATH="/Applications/Family VPN.app"
 if [ -d "$DESKTOP_APP_PATH" ]; then
     echo -e "${YELLOW}⚠️  Removing existing desktop app...${NC}"
-    sudo rm -rf "$DESKTOP_APP_PATH"
+    run_sudo rm -rf "$DESKTOP_APP_PATH"
 fi
 
-sudo cp -R "desktop-app/dist/mac-arm64/Family VPN.app" "/Applications/"
+run_sudo cp -R "desktop-app/dist/mac-arm64/Family VPN.app" "/Applications/"
 echo -e "${GREEN}✓ Desktop app installed to /Applications/${NC}"
 
 # Install menu bar app
 MENU_BAR_PATH="/usr/local/bin/family-vpn-menubar"
 if [ -f "$MENU_BAR_PATH" ]; then
     echo -e "${YELLOW}⚠️  Removing existing menu bar app...${NC}"
-    sudo rm -f "$MENU_BAR_PATH"
+    run_sudo rm -f "$MENU_BAR_PATH"
 fi
 
-sudo cp "menu-bar/family-vpn-menubar" "/usr/local/bin/"
-sudo chmod +x "/usr/local/bin/family-vpn-menubar"
+run_sudo cp "menu-bar/family-vpn-menubar" "/usr/local/bin/"
+run_sudo chmod +x "/usr/local/bin/family-vpn-menubar"
 echo -e "${GREEN}✓ Menu bar app installed to /usr/local/bin/${NC}"
 
 # Install VPN client
 VPN_CLIENT_PATH="/usr/local/bin/family-vpn-client"
 if [ -f "$VPN_CLIENT_PATH" ]; then
     echo -e "${YELLOW}⚠️  Removing existing VPN client...${NC}"
-    sudo rm -f "$VPN_CLIENT_PATH"
+    run_sudo rm -f "$VPN_CLIENT_PATH"
 fi
 
-sudo cp "client/vpn-client" "/usr/local/bin/family-vpn-client"
-sudo chmod +x "/usr/local/bin/family-vpn-client"
+run_sudo cp "client/vpn-client" "/usr/local/bin/family-vpn-client"
+run_sudo chmod +x "/usr/local/bin/family-vpn-client"
 echo -e "${GREEN}✓ VPN client installed to /usr/local/bin/${NC}"
 
 # Install routing fix script
 ROUTING_SCRIPT="/usr/local/bin/family-vpn-fix-routing"
-sudo cp "client/fix-routing.sh" "$ROUTING_SCRIPT"
-sudo chmod +x "$ROUTING_SCRIPT"
+run_sudo cp "client/fix-routing.sh" "$ROUTING_SCRIPT"
+run_sudo chmod +x "$ROUTING_SCRIPT"
 echo -e "${GREEN}✓ Routing fix script installed${NC}"
 
 echo ""
