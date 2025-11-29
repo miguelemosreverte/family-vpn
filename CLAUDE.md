@@ -166,6 +166,157 @@
 - Timeout detection at 90 seconds
 - State synchronization on reconnect
 
+## Layer 0: Event Bus Architecture
+
+The Event Bus is the foundational layer for real-time event-driven communication.
+All UI components, dashboards, and services build on top of this system.
+
+### Design Principles
+
+1. **Namespaced Events**: All events are organized by namespace (e.g., `versions.client`, `health.ping`)
+2. **Pattern Subscriptions**: Subscribe to wildcards like `versions.*` to get all version events
+3. **Periodic Snapshots**: Consolidated state broadcast every 5 minutes
+4. **Sequence Numbers**: Monotonically increasing for ordering and replay
+5. **Event History**: Buffer of last 1000 events for late-joining clients
+
+### Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Event Bus                               │
+├─────────────────────────────────────────────────────────────────┤
+│  Namespaces:                                                    │
+│    system.*        - Core system events (connect, disconnect)   │
+│    health.*        - Ping, latency, uptime events               │
+│    versions.*      - Client/server version tracking             │
+│    updates.*       - Hot-reload and update notifications        │
+│    peers.*         - Peer discovery and status                  │
+│    dashboard.*     - Dashboard-specific events                  │
+├─────────────────────────────────────────────────────────────────┤
+│  Snapshots:                                                     │
+│    Every 5 minutes, consolidated state is broadcast             │
+│    New clients receive snapshot immediately on connect          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Event Format
+
+```json
+{
+  "ns": "versions.client",
+  "ts": 1234567890123,
+  "seq": 42,
+  "data": {
+    "hostname": "MacBook-Air.local",
+    "version": "abc123"
+  }
+}
+```
+
+### Namespace Constants
+
+| Namespace | Description |
+|-----------|-------------|
+| `system.connect` | Client connected |
+| `system.disconnect` | Client disconnected |
+| `system.snapshot` | Periodic state snapshot |
+| `health.ping` | Ping result |
+| `health.latency` | Latency measurement |
+| `versions.client` | Client version update |
+| `versions.server` | Server version update |
+| `updates.available` | Update available notification |
+| `peers.joined` | Peer joined network |
+| `peers.left` | Peer left network |
+
+### Subscription Patterns
+
+```javascript
+// Subscribe to all version events
+bus.subscribe('versions.*', (event) => { ... });
+
+// Subscribe to specific event
+bus.subscribe('health.ping', (event) => { ... });
+
+// Subscribe to everything (use sparingly)
+bus.subscribe('*', (event) => { ... });
+```
+
+### Snapshot Structure
+
+```json
+{
+  "id": "20231129T123456Z",
+  "ts": 1234567890123,
+  "state": {
+    "versions": {
+      "client1": "abc123",
+      "client2": "def456"
+    },
+    "health": {
+      "uptime": 99.9,
+      "lastPing": 1234567890
+    }
+  },
+  "last_seq": 42
+}
+```
+
+### Files
+
+- `protocol/events.go` - Go implementation (server-side)
+- `protocol/events.js` - JavaScript client (Electron/browser)
+- `protocol/events_test.go` - Comprehensive test suite
+
+### Usage Example (JavaScript)
+
+```javascript
+const { createEventBus, NS, SUB } = require('./protocol/events.js');
+
+const bus = createEventBus({
+  url: 'ws://10.8.0.1:9000/ws',
+  subscriptions: SUB.VERSIONS,
+  onSnapshot: (snapshot) => {
+    console.log('Initial state:', snapshot.state);
+    renderVersions(snapshot.get('versions'));
+  }
+});
+
+// Subscribe to version updates
+bus.subscribe('versions.*', (event) => {
+  console.log('Version updated:', event.data);
+  updateVersionDisplay(event);
+});
+
+// Connect
+bus.connect();
+```
+
+### Usage Example (Go)
+
+```go
+import "github.com/miguelemosreverte/family-vpn/protocol"
+
+// Create event bus with 5-minute snapshot interval
+eb := protocol.NewEventBus(5 * time.Minute)
+defer eb.Stop()
+
+// Register state collector for snapshots
+eb.RegisterStateCollector("versions", func() interface{} {
+    return getClientVersions()
+})
+
+// Subscribe to version events
+eb.Subscribe("versions.*", func(e protocol.Event) {
+    log.Printf("Version event: %s", e.Namespace)
+})
+
+// Publish an event
+eb.Publish(protocol.NSVersionsClient, map[string]string{
+    "hostname": hostname,
+    "version":  gitCommit,
+})
+```
+
 ## Deployment Strategy
 
 ### Update Propagation
