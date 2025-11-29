@@ -5,50 +5,200 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Family VPN Dashboard</title>
     <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
     <div id="app">
-        <header>
-            <div class="header-top">
-                <h1>🔒 Family VPN Dashboard</h1>
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h1>🔒 Family VPN</h1>
                 <button id="theme-toggle" class="theme-toggle" title="Toggle dark/light mode">
                     <span class="icon-sun">☀️</span>
                     <span class="icon-moon">🌙</span>
                 </button>
             </div>
-            <div class="header-stats">
-                <span class="stat">
-                    <span class="label">Connected Clients:</span>
-                    <span class="value" id="client-count">0</span>
-                </span>
-                <span class="stat">
-                    <span class="label">Total Disk:</span>
-                    <span class="value" id="total-disk">0 GB</span>
-                </span>
-                <button id="refresh-btn" class="refresh-btn">🔄 Refresh</button>
+
+            <nav class="sidebar-nav">
+                <button class="nav-item" data-dashboard="home">
+                    <span class="nav-icon">🏠</span>
+                    <span class="nav-label">Home</span>
+                </button>
+                <button class="nav-item active" data-dashboard="health">
+                    <span class="nav-icon">💚</span>
+                    <span class="nav-label">Health</span>
+                </button>
+                <button class="nav-item" data-dashboard="volumes">
+                    <span class="nav-icon">💾</span>
+                    <span class="nav-label">Storage</span>
+                </button>
+                <button class="nav-item" data-dashboard="versions">
+                    <span class="nav-icon">📦</span>
+                    <span class="nav-label">Versions</span>
+                </button>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="connection-status">
+                    <span class="status-indicator" id="ws-status"></span>
+                    <span class="status-text">Connecting...</span>
+                </div>
             </div>
-        </header>
+        </aside>
 
-        <main>
-            <section class="overview">
-                <h2>Connected Clients</h2>
-                <div id="clients-grid" class="clients-grid">
-                    <!-- Client cards will be inserted here -->
+        <!-- Main Content Area -->
+        <div class="main-content">
+            <header class="top-bar">
+                <div class="header-title">
+                    <h2 id="dashboard-title">Health Monitoring</h2>
                 </div>
-            </section>
-
-            <section class="volumes">
-                <h2>Volume Details</h2>
-                <div id="volumes-container" class="volumes-container">
-                    <!-- Volume details will be inserted here -->
+                <div class="header-actions">
+                    <span class="last-updated">
+                        Last updated: <span id="last-updated">Never</span>
+                    </span>
+                    <button id="refresh-btn" class="refresh-btn">🔄 Refresh</button>
                 </div>
-            </section>
-        </main>
+            </header>
 
-        <footer>
-            <p>Last updated: <span id="last-updated">Never</span></p>
-            <p>Auto-refresh: <span id="auto-refresh">Enabled</span></p>
-        </footer>
+            <main class="dashboard-container">
+                <!-- Home Dashboard -->
+                <div id="home-dashboard" class="dashboard" style="display: none;">
+                    <div class="welcome-message">
+                        <h1>Welcome to Family VPN</h1>
+                        <p>Select a dashboard from the sidebar to get started.</p>
+                    </div>
+                </div>
+
+                <!-- Health Monitoring Dashboard -->
+                <div id="health-dashboard" class="dashboard active">
+                    <div class="metrics-grid">
+                        <div class="metric-card">
+                            <h3>Connected Clients</h3>
+                            <div class="metric-value" id="health-client-count">0</div>
+                            <div class="metric-label">Active Connections</div>
+                        </div>
+                        <div class="metric-card">
+                            <h3>Server Health</h3>
+                            <div class="metric-value" id="server-health">
+                                <span class="status-badge status-unknown">Unknown</span>
+                            </div>
+                            <div class="metric-label" id="server-latency">Latency: --</div>
+                        </div>
+                        <div class="metric-card">
+                            <h3>Uptime (24h)</h3>
+                            <div class="metric-value" id="uptime-24h">--%</div>
+                            <div class="metric-label">Last 24 hours</div>
+                        </div>
+                        <div class="metric-card">
+                            <h3>Average Latency</h3>
+                            <div class="metric-value" id="avg-latency">-- ms</div>
+                            <div class="metric-label">Last hour</div>
+                        </div>
+                    </div>
+
+                    <div class="charts-grid">
+                        <div class="chart-card">
+                            <h3>Ping History - Last Hour</h3>
+                            <canvas id="ping-hour-chart"></canvas>
+                        </div>
+                        <div class="chart-card">
+                            <h3>Ping History - Last 24 Hours</h3>
+                            <canvas id="ping-24h-chart"></canvas>
+                        </div>
+                    </div>
+
+                    <div class="peers-status">
+                        <h3>Client Status</h3>
+                        <div id="peers-status-grid" class="peers-grid">
+                            <!-- Peer status cards will be inserted here -->
+                        </div>
+                    </div>
+
+                    <div class="ping-history">
+                        <h3>Recent Ping History (Last 100)</h3>
+                        <div id="ping-history-table" class="ping-table">
+                            <!-- Ping history table will be inserted here -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Volumes Dashboard -->
+                <div id="volumes-dashboard" class="dashboard" style="display: none;">
+                    <div class="volumes-header">
+                        <div class="header-stats">
+                            <span class="stat">
+                                <span class="label">Connected Clients:</span>
+                                <span class="value" id="client-count">0</span>
+                            </span>
+                            <span class="stat">
+                                <span class="label">Total Disk:</span>
+                                <span class="value" id="total-disk">0 GB</span>
+                            </span>
+                        </div>
+                    </div>
+
+                    <section class="overview">
+                        <h2>Connected Clients</h2>
+                        <div id="clients-grid" class="clients-grid">
+                            <!-- Client cards will be inserted here -->
+                        </div>
+                    </section>
+
+                    <section class="volumes">
+                        <h2>Volume Details</h2>
+                        <div id="volumes-container" class="volumes-container">
+                            <!-- Volume details will be inserted here -->
+                        </div>
+                    </section>
+                </div>
+
+                <!-- Versions Dashboard -->
+                <div id="versions-dashboard" class="dashboard" style="display: none;">
+                    <div class="version-overview">
+                        <div class="version-card">
+                            <h3>Server Version</h3>
+                            <div class="version-value" id="server-version">
+                                <code>Loading...</code>
+                            </div>
+                        </div>
+                        <div class="version-card">
+                            <h3>Deployment Status</h3>
+                            <div class="deployment-stats" id="deployment-stats">
+                                <div class="stat-item">
+                                    <span class="stat-label">Up to date:</span>
+                                    <span class="stat-value" id="up-to-date-count">0</span>
+                                </div>
+                                <div class="stat-item">
+                                    <span class="stat-label">Updating:</span>
+                                    <span class="stat-value" id="updating-count">0</span>
+                                </div>
+                                <div class="stat-item">
+                                    <span class="stat-label">Behind:</span>
+                                    <span class="stat-value" id="behind-count">0</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="version-timeline">
+                        <h3>Version Timeline</h3>
+                        <canvas id="version-timeline-chart"></canvas>
+                    </div>
+
+                    <div class="clients-version">
+                        <h3>Client Versions</h3>
+                        <div id="clients-version-table" class="version-table">
+                            <!-- Client version table will be inserted here -->
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <footer class="bottom-bar">
+                <span>Auto-refresh: <span id="auto-refresh">Enabled</span></span>
+                <span>WebSocket: <span id="ws-connection">Disconnected</span></span>
+            </footer>
+        </div>
     </div>
 
     <script src="app.js"></script>
