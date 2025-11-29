@@ -7,6 +7,22 @@ const fs = require('fs');
 let mainWindow;
 let devMode = process.argv.includes('--dev');
 
+// Single instance lock - only allow one instance of the app
+const gotTheLock = app.requestSingleInstanceLock();
+
+if (!gotTheLock) {
+  // Another instance is already running, quit this one
+  app.quit();
+} else {
+  // Focus the existing window if user tries to open a second instance
+  app.on('second-instance', (event, commandLine, workingDirectory) => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
 // Auto-updater using git (same as menu bar app)
 function checkForUpdates() {
   const repoDir = path.join(__dirname, '..');
