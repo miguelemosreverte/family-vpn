@@ -14,16 +14,18 @@ async function init() {
         document.body.classList.add('dark-mode');
     }
 
-    await loadData();
+    await loadData(true); // Show loading on initial load
     setupEventListeners();
     startAutoRefresh();
 }
 
 // Load all data
-async function loadData() {
+async function loadData(showLoading = false) {
     try {
-        // Show loading state immediately
-        showLoadingState();
+        // Only show loading state for manual refresh, not auto-refresh
+        if (showLoading) {
+            showLoadingState();
+        }
 
         // Get VPN peers
         peers = await window.vpnAPI.getPeers();
@@ -237,7 +239,7 @@ function setupEventListeners() {
         refreshBtn.textContent = '⏳ Loading...';
         refreshBtn.classList.add('loading');
 
-        loadData().finally(() => {
+        loadData(true).finally(() => { // Show loading on manual refresh
             refreshBtn.disabled = false;
             refreshBtn.textContent = '🔄 Refresh';
             refreshBtn.classList.remove('loading');
@@ -253,11 +255,11 @@ function setupEventListeners() {
     });
 }
 
-// Auto-refresh every 30 seconds
+// Auto-refresh every 30 seconds (silent, no loading screen)
 function startAutoRefresh() {
     setInterval(() => {
-        console.log('🔄 Auto-refresh triggered');
-        loadData();
+        console.log('🔄 Auto-refresh triggered (background)');
+        loadData(false); // Silent refresh - don't clear the screen
     }, 30000); // 30 seconds
 }
 
