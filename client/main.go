@@ -896,6 +896,23 @@ func (c *VPNClient) handleWebSocketMessages() {
 					c.ipcServer.QueueSignal("video", "", []byte(videoData))
 				}
 			}
+		} else if msgType == "update_available" {
+			// Continuous deployment: new Git commit detected by server
+			version, _ := msg["version"].(string)
+			log.Printf("[UPDATE] New version available: %s", version)
+			log.Printf("[UPDATE] Triggering auto-update...")
+
+			// Run auto-update script in background
+			go func() {
+				cmd := exec.Command("bash", "client/auto-update.sh")
+				cmd.Dir = filepath.Dir(filepath.Dir(os.Args[0])) // Go up to repo root
+				output, err := cmd.CombinedOutput()
+				if err != nil {
+					log.Printf("[UPDATE] Failed: %v\nOutput: %s", err, output)
+				} else {
+					log.Printf("[UPDATE] Success:\n%s", output)
+				}
+			}()
 		}
 	}
 }

@@ -886,5 +886,81 @@ func main() {
 		}
 	}()
 
+	// Start continuous deployment monitor
+	go server.monitorGitUpdates()
+
 	log.Fatal(server.Start())
+}
+
+// monitorGitUpdates polls Git repository for changes and broadcasts updates to all clients
+func (s *VPNServer) monitorGitUpdates() {
+	lastCommit := ""
+	pollInterval := 5 * time.Minute
+
+	// Get initial commit
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	if output, err := cmd.Output(); err == nil {
+		lastCommit = strings.TrimSpace(string(output))
+		log.Printf("[CD] Initial commit: %s", lastCommit[:8])
+	}
+
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		// Fetch latest changes
+		fetchCmd := exec.Command("git", "fetch", "origin", "main")
+		if err := fetchCmd.Run(); err != nil {
+			log.Printf("[CD] Failed to fetch: %v", err)
+			continue
+		}
+
+		// Check remote commit
+		remoteCmd := exec.Command("git", "rev-parse", "origin/main")
+		output, err := remoteCmd.Output()
+		if err != nil {
+			log.Printf("[CD] Failed to get remote commit: %v", err)
+			continue
+		}
+
+		remoteCommit := strings.TrimSpace(string(output))
+
+		if remoteCommit != lastCommit && lastCommit != "" {
+			log.Printf("[CD] New commit detected: %s -> %s", lastCommit[:8], remoteCommit[:8])
+
+			// Broadcast update to all connected WebSocket clients
+			s.broadcastUpdate(remoteCommit)
+
+			lastCommit = remoteCommit
+		} else if lastCommit == "" {
+			lastCommit = remoteCommit
+		}
+	}
+}
+
+// broadcastUpdate sends update_available message to all connected WebSocket clients
+func (s *VPNServer) broadcastUpdate(version string) {
+	s.wsClientsMutex.RLock()
+	defer s.wsClientsMutex.RUnlock()
+
+	message := map[string]interface{}{
+		"type":    "update_available",
+		"version": version,
+		"timestamp": time.Now().Unix(),
+	}
+
+	successCount := 0
+	failCount := 0
+
+	for vpnIP, conn := range s.wsClients {
+		if err := conn.WriteJSON(message); err != nil {
+			log.Printf("[CD] Failed to notify %s: %v", vpnIP, err)
+			failCount++
+		} else {
+			log.Printf("[CD] Notified %s of update %s", vpnIP, version[:8])
+			successCount++
+		}
+	}
+
+	log.Printf("[CD] Broadcast complete: %d success, %d failed", successCount, failCount)
 }
