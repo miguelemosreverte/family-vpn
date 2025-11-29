@@ -34,6 +34,18 @@ const (
 	SERVER_IP  = "10.8.0.1"
 )
 
+// isValidIPPacket checks if data is a valid IPv4 or IPv6 packet
+// This prevents TUN write errors when receiving malformed or non-IP data
+func isValidIPPacket(data []byte) bool {
+	if len(data) < 1 {
+		return false
+	}
+	// IP version is in the high 4 bits of the first byte
+	version := data[0] >> 4
+	// IPv4 = 4, IPv6 = 6
+	return version == 4 || version == 6
+}
+
 // getRealUserHomeDir returns the real user's home directory, even when running as root via sudo
 func getRealUserHomeDir() (string, error) {
 	// Check if running as root via sudo
@@ -693,12 +705,18 @@ func (c *VPNClient) Connect() error {
 				continue
 			}
 
+			// Validate that this is a proper IP packet before writing to TUN
+			// This prevents crashes when receiving malformed or non-IP data
+			if !isValidIPPacket(packet) {
+				log.Printf("[TUN] Skipping invalid packet (len=%d, first byte=0x%02x)", len(packet), packet[0])
+				continue
+			}
+
 			// Measure TUN write
 			t2 := time.Now()
 			if _, err := c.tunIface.Write(packet); err != nil {
-				log.Printf("TUN write error: %v", err)
-				done <- true
-				return
+				log.Printf("TUN write error: %v (skipping)", err)
+				continue // Don't crash - skip and continue receiving
 			}
 			timeTunWrite += time.Since(t2).Microseconds()
 
