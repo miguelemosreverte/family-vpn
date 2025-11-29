@@ -265,7 +265,7 @@ fi
 
 # Install .env to /usr/local/ for menu bar app to find
 run_sudo cp ".env" "/usr/local/.env"
-run_sudo chmod 600 "/usr/local/.env"
+run_sudo chmod 644 "/usr/local/.env"
 echo -e "${GREEN}✓ Configuration installed to /usr/local/.env${NC}"
 
 echo ""
