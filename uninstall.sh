@@ -237,6 +237,62 @@ fi
 echo -e "${GREEN}✓ Build artifacts cleaned${NC}"
 
 echo ""
+echo "🎯 Removing from Dock and Login Items..."
+echo "----------------------------------------"
+
+# Remove from Dock
+if command -v dockutil &> /dev/null; then
+    dockutil --remove "Family VPN" --no-restart 2>/dev/null && echo -e "${GREEN}✓ Removed from Dock${NC}" || echo -e "${YELLOW}• Not in Dock${NC}"
+    killall Dock 2>/dev/null
+else
+    # Use Python to remove dock entries
+    python3 << 'DOCK_CLEANUP'
+import subprocess
+import os
+
+dock_plist = f"{os.environ['HOME']}/Library/Preferences/com.apple.dock.plist"
+
+# Convert binary plist to XML for processing
+subprocess.run(['plutil', '-convert', 'xml1', dock_plist], capture_output=True)
+
+# Read, filter, and write back
+with open(dock_plist, 'r') as f:
+    content = f.read()
+
+# Simple approach: if the plist contains Family VPN, we need manual cleanup
+if 'Family VPN' in content:
+    print("⚠️  Family VPN found in Dock - please remove manually from System Preferences")
+    print("   System Preferences → Dock & Menu Bar → Remove from Dock")
+
+# Convert back to binary
+subprocess.run(['plutil', '-convert', 'binary1', dock_plist], capture_output=True)
+DOCK_CLEANUP
+fi
+
+# Remove from Login Items
+osascript -e 'tell application "System Events" to delete login item "Family VPN"' 2>/dev/null && \
+    echo -e "${GREEN}✓ Removed from Login Items${NC}" || \
+    echo -e "${YELLOW}• Not in Login Items${NC}"
+
+# Unload watchdog service
+LAUNCHD_PLIST="$HOME/Library/LaunchAgents/com.family.vpn.watchdog.plist"
+if [ -f "$LAUNCHD_PLIST" ]; then
+    launchctl unload "$LAUNCHD_PLIST" 2>/dev/null
+    rm -f "$LAUNCHD_PLIST"
+    echo -e "${GREEN}✓ Removed watchdog service${NC}"
+else
+    echo -e "${YELLOW}• Watchdog service not installed${NC}"
+fi
+
+# Also check for old menubar service
+OLD_MENUBAR_PLIST="$HOME/Library/LaunchAgents/com.family.vpnmanager.plist"
+if [ -f "$OLD_MENUBAR_PLIST" ]; then
+    launchctl unload "$OLD_MENUBAR_PLIST" 2>/dev/null
+    rm -f "$OLD_MENUBAR_PLIST"
+    echo -e "${GREEN}✓ Removed old menubar service${NC}"
+fi
+
+echo ""
 echo "✅ Uninstall Complete!"
 echo "======================"
 echo ""

@@ -336,20 +336,57 @@ osascript -e 'tell application "System Events" to make login item at end with pr
     echo -e "${GREEN}✓ Added to Login Items (starts on login)${NC}" || \
     echo -e "${YELLOW}⚠️  Could not add to Login Items - add manually in System Preferences${NC}"
 
-# Add to Dock (only if not already there)
-if defaults read com.apple.dock persistent-apps 2>/dev/null | grep -q "Family VPN"; then
-    echo -e "${GREEN}✓ Already in Dock${NC}"
+# Add to Dock - FIRST remove any existing entries to avoid duplicates, then add once
+echo "Adding to Dock..."
+if command -v dockutil &> /dev/null; then
+    # Use dockutil - remove all instances first, then add once
+    dockutil --remove "Family VPN" --no-restart 2>/dev/null
+    dockutil --add "/Applications/Family VPN.app" --no-restart 2>/dev/null
+    killall Dock 2>/dev/null
+    echo -e "${GREEN}✓ Added to Dock (via dockutil)${NC}"
 else
-    if command -v dockutil &> /dev/null; then
-        dockutil --add "/Applications/Family VPN.app" --no-restart 2>/dev/null
-        killall Dock 2>/dev/null
-        echo -e "${GREEN}✓ Added to Dock${NC}"
-    else
-        # Use defaults to add to Dock
-        defaults write com.apple.dock persistent-apps -array-add "<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>/Applications/Family VPN.app</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>" 2>/dev/null
-        killall Dock 2>/dev/null
-        echo -e "${GREEN}✓ Added to Dock${NC}"
-    fi
+    # Manual dock manipulation - remove duplicates first
+    python3 << 'DOCK_SETUP'
+import subprocess
+import os
+import plistlib
+
+dock_plist = f"{os.environ['HOME']}/Library/Preferences/com.apple.dock.plist"
+
+# Read the plist
+result = subprocess.run(['plutil', '-convert', 'xml1', '-o', '-', dock_plist],
+                       capture_output=True)
+plist_data = plistlib.loads(result.stdout)
+
+# Remove all existing Family VPN entries
+if 'persistent-apps' in plist_data:
+    original = len(plist_data['persistent-apps'])
+    plist_data['persistent-apps'] = [
+        app for app in plist_data['persistent-apps']
+        if 'Family VPN' not in str(app.get('tile-data', {}).get('file-data', {}).get('_CFURLString', ''))
+    ]
+    removed = original - len(plist_data['persistent-apps'])
+
+    # Add one entry
+    plist_data['persistent-apps'].append({
+        'tile-data': {
+            'file-data': {
+                '_CFURLString': '/Applications/Family VPN.app',
+                '_CFURLStringType': 0
+            }
+        }
+    })
+
+    # Write back
+    xml_output = plistlib.dumps(plist_data)
+    subprocess.run(['plutil', '-convert', 'binary1', '-o', dock_plist, '-'],
+                  input=xml_output, capture_output=True)
+
+    print(f"Removed {removed} old entries, added 1 new entry")
+
+DOCK_SETUP
+    killall Dock 2>/dev/null
+    echo -e "${GREEN}✓ Added to Dock (manual)${NC}"
 fi
 
 echo ""
