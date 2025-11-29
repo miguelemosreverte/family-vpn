@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/miguelemosreverte/family-vpn/protocol"
 	"github.com/songgao/water"
 )
 
@@ -826,7 +827,27 @@ func (s *VPNServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// updateInitHandler triggers server and client updates
+// componentToDomain maps component names to protocol domains
+func componentToDomain(component string) protocol.Domain {
+	switch strings.ToLower(component) {
+	case "vpn", "core", "client":
+		return protocol.DomainCore
+	case "server":
+		return protocol.DomainServer
+	case "desktop", "electron":
+		return protocol.DomainDesktop
+	case "ui", "renderer":
+		return protocol.DomainUI
+	case "menubar", "menu":
+		return protocol.DomainMenubar
+	case "video", "ssh": // Extensions
+		return protocol.DomainExtension
+	default:
+		return protocol.DomainAll
+	}
+}
+
+// updateInitHandler triggers server and client updates using Layer 0 protocol
 func updateInitHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -839,21 +860,49 @@ func updateInitHandler(w http.ResponseWriter, r *http.Request) {
 		component = "all"
 	}
 
-	log.Printf("[UPDATE] Update initialization request received for component: %s", component)
+	// Parse optional target for extensions (e.g., ?component=extension&target=video)
+	target := r.URL.Query().Get("target")
 
-	// Broadcast component-specific update message to all clients
+	log.Printf("[UPDATE] Update initialization request received for component: %s (target: %s)", component, target)
+
+	// Get current commit for the update message
+	var currentCommit string
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	if output, err := cmd.Output(); err == nil {
+		currentCommit = strings.TrimSpace(string(output))
+	}
+
+	// Map component to domain using Layer 0 protocol
+	domain := componentToDomain(component)
+
+	// Determine action based on domain
+	action := protocol.ActionReload
+	if domain == protocol.DomainCore || domain == protocol.DomainServer {
+		action = protocol.ActionRestart
+	}
+
+	// Create Layer 0 update message
+	msg := protocol.NewUpdateMessage(domain, action).
+		WithCommit(currentCommit).
+		WithMessage(fmt.Sprintf("Manual update triggered for %s", component))
+
+	// Add target for extension-specific updates
+	if target != "" && domain == protocol.DomainExtension {
+		msg.WithTarget(target)
+	}
+
+	// Broadcast using Layer 0 protocol
 	if globalServer != nil {
-		updateMessage := fmt.Sprintf("UPDATE_%s", strings.ToUpper(component))
-		log.Printf("[UPDATE] Broadcasting %s to all clients...", updateMessage)
-		globalServer.broadcastControlMessage(updateMessage)
+		log.Printf("[UPDATE] Broadcasting Layer 0 message: domain=%s action=%s", domain, action)
+		globalServer.broadcastUpdateMessage(msg)
 	}
 
 	// Respond to the request before updating (so deploy script gets response)
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Update initiated for component: %s\n", component)
+	fmt.Fprintf(w, "Update initiated for component: %s (domain=%s, action=%s)\n", component, domain, action)
 
-	// Only restart server if component is "vpn" or "all"
-	if component == "vpn" || component == "all" {
+	// Only restart server if domain is server or core
+	if domain == protocol.DomainServer || domain == protocol.DomainCore || domain == protocol.DomainAll {
 		// Spawn background goroutine to update and restart server
 		go func() {
 			log.Printf("[UPDATE] Starting server self-update in 2 seconds...")
@@ -871,7 +920,7 @@ func updateInitHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 	} else {
-		log.Printf("[UPDATE] Component %s does not require server restart", component)
+		log.Printf("[UPDATE] Component %s (domain=%s) does not require server restart", component, domain)
 	}
 }
 
@@ -1064,8 +1113,9 @@ func (s *VPNServer) monitorGitUpdates() {
 		if remoteCommit != lastCommit && lastCommit != "" {
 			log.Printf("[CD] New commit detected: %s -> %s", lastCommit[:8], remoteCommit[:8])
 
-			// Broadcast update to all connected WebSocket clients
-			s.broadcastUpdate(remoteCommit)
+			// Broadcast update to all connected WebSocket clients using Layer 0 protocol
+			// This analyzes the changed files to determine which domain(s) need to update
+			s.broadcastUpdate(lastCommit, remoteCommit)
 
 			lastCommit = remoteCommit
 		} else if lastCommit == "" {
@@ -1074,15 +1124,73 @@ func (s *VPNServer) monitorGitUpdates() {
 	}
 }
 
-// broadcastUpdate sends update_available message to all connected WebSocket clients
-func (s *VPNServer) broadcastUpdate(version string) {
+// detectDomainFromFiles analyzes changed files to determine which domain(s) should update
+func detectDomainFromFiles(files []string) protocol.Domain {
+	// File path prefixes to domain mapping
+	// More specific paths take precedence
+	pathToDomain := map[string]protocol.Domain{
+		"server/":       protocol.DomainServer,
+		"client/":       protocol.DomainCore,
+		"menu-bar/":     protocol.DomainMenubar,
+		"desktop-app/renderer/": protocol.DomainUI,
+		"desktop-app/":  protocol.DomainDesktop,
+		"extensions/":   protocol.DomainExtension,
+		"protocol/":     protocol.DomainAll, // Protocol changes affect everyone
+	}
+
+	domainCounts := make(map[protocol.Domain]int)
+
+	for _, file := range files {
+		for prefix, domain := range pathToDomain {
+			if strings.HasPrefix(file, prefix) {
+				domainCounts[domain]++
+				break
+			}
+		}
+	}
+
+	// If multiple domains affected, return DomainAll
+	if len(domainCounts) > 1 {
+		return protocol.DomainAll
+	}
+
+	// Return the single domain if only one is affected
+	for domain := range domainCounts {
+		return domain
+	}
+
+	// Default to DomainAll if we can't determine
+	return protocol.DomainAll
+}
+
+// getChangedFiles returns list of files changed between two commits
+func getChangedFiles(oldCommit, newCommit string) []string {
+	cmd := exec.Command("git", "diff", "--name-only", oldCommit, newCommit)
+	output, err := cmd.Output()
+	if err != nil {
+		log.Printf("[CD] Failed to get changed files: %v", err)
+		return nil
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	var files []string
+	for _, line := range lines {
+		if line != "" {
+			files = append(files, line)
+		}
+	}
+	return files
+}
+
+// broadcastUpdateMessage sends a Layer 0 UpdateMessage to all connected WebSocket clients
+func (s *VPNServer) broadcastUpdateMessage(msg *protocol.UpdateMessage) {
 	s.wsClientsMutex.RLock()
 	defer s.wsClientsMutex.RUnlock()
 
+	// Create message envelope for WebSocket
 	message := map[string]interface{}{
-		"type":    "update_available",
-		"version": version,
-		"timestamp": time.Now().Unix(),
+		"type":    "update",
+		"payload": msg,
 	}
 
 	successCount := 0
@@ -1093,10 +1201,43 @@ func (s *VPNServer) broadcastUpdate(version string) {
 			log.Printf("[CD] Failed to notify %s: %v", vpnIP, err)
 			failCount++
 		} else {
-			log.Printf("[CD] Notified %s of update %s", vpnIP, version[:8])
+			log.Printf("[CD] Notified %s: domain=%s action=%s commit=%s",
+				vpnIP, msg.Domain, msg.Action, msg.Commit[:8])
 			successCount++
 		}
 	}
 
-	log.Printf("[CD] Broadcast complete: %d success, %d failed", successCount, failCount)
+	log.Printf("[CD] Broadcast complete: %d success, %d failed (domain=%s)",
+		successCount, failCount, msg.Domain)
+}
+
+// broadcastUpdate sends update_available message to all connected WebSocket clients
+// This is the smart version that analyzes which files changed to determine the right domain
+func (s *VPNServer) broadcastUpdate(oldCommit, newCommit string) {
+	// Get list of changed files
+	changedFiles := getChangedFiles(oldCommit, newCommit)
+
+	// Determine which domain should update based on changed files
+	domain := detectDomainFromFiles(changedFiles)
+
+	// Determine action based on domain
+	action := protocol.ActionReload
+	if domain == protocol.DomainCore || domain == protocol.DomainServer {
+		action = protocol.ActionRestart
+	}
+
+	// Create the update message
+	msg := protocol.NewUpdateMessage(domain, action).
+		WithCommit(newCommit).
+		WithFiles(changedFiles).
+		WithMessage(fmt.Sprintf("Update available: %s", newCommit[:8]))
+
+	log.Printf("[CD] Update detected: %d files changed, domain=%s, action=%s",
+		len(changedFiles), domain, action)
+	for _, f := range changedFiles {
+		log.Printf("[CD]   - %s", f)
+	}
+
+	// Broadcast using the new protocol
+	s.broadcastUpdateMessage(msg)
 }
