@@ -437,6 +437,9 @@ func onReady() {
 	// Start peer list updater
 	go peerListUpdater()
 
+	// Launch desktop app on startup
+	go launchDesktopApp()
+
 	// Auto-connect on startup (unless in dev mode)
 	if !devMode {
 		go func() {
@@ -1125,6 +1128,32 @@ func openRemoteAccess(vpnIP string) {
 		dialog.Message("Failed to open Screen Sharing to %s\n\nError: %v", vpnIP, err).Title("Remote Access Error").Error()
 	} else {
 		log.Printf("Opened Screen Sharing to %s", vpnIP)
+	}
+}
+
+// launchDesktopApp launches the desktop dashboard app
+func launchDesktopApp() {
+	// Check if desktop app is installed
+	desktopAppPath := "/Applications/Family VPN.app"
+	if _, err := os.Stat(desktopAppPath); os.IsNotExist(err) {
+		log.Printf("Desktop app not found at %s, skipping auto-launch", desktopAppPath)
+		return
+	}
+
+	// Check if already running
+	checkCmd := exec.Command("pgrep", "-f", "Family VPN.app")
+	if output, err := checkCmd.Output(); err == nil && len(output) > 0 {
+		log.Printf("Desktop app already running, skipping launch")
+		return
+	}
+
+	// Launch desktop app
+	log.Printf("Launching desktop dashboard app...")
+	cmd := exec.Command("open", "-a", "Family VPN")
+	if err := cmd.Start(); err != nil {
+		log.Printf("Failed to launch desktop app: %v", err)
+	} else {
+		log.Printf("✓ Desktop dashboard app launched")
 	}
 }
 

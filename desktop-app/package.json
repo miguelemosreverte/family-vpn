@@ -1,0 +1,45 @@
+{
+  "name": "family-vpn-dashboard",
+  "productName": "Family VPN",
+  "version": "1.0.0",
+  "description": "Family VPN Desktop Dashboard - Monitor all clients, disk usage, and system health",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "update": "git pull origin main && npm install"
+  },
+  "keywords": ["vpn", "dashboard", "monitoring", "family"],
+  "author": "Miguel Lemos",
+  "license": "MIT",
+  "build": {
+    "appId": "com.family.vpn",
+    "productName": "Family VPN",
+    "mac": {
+      "category": "public.app-category.utilities",
+      "icon": "assets/icon.icns",
+      "target": ["dmg", "zip"]
+    },
+    "dmg": {
+      "title": "Family VPN Installer"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "assets/**/*",
+      "package.json"
+    ]
+  },
+  "dependencies": {
+    "electron": "^28.0.0",
+    "axios": "^1.6.0",
+    "chart.js": "^4.4.0"
+  },
+  "devDependencies": {
+    "electron-builder": "^24.9.0"
+  }
+}

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Family VPN Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <h1>🔒 Family VPN Dashboard</h1>
+            <div class="header-stats">
+                <span class="stat">
+                    <span class="label">Connected Clients:</span>
+                    <span class="value" id="client-count">0</span>
+                </span>
+                <span class="stat">
+                    <span class="label">Total Disk:</span>
+                    <span class="value" id="total-disk">0 GB</span>
+                </span>
+                <button id="refresh-btn" class="refresh-btn">🔄 Refresh</button>
+            </div>
+        </header>
+
+        <main>
+            <section class="overview">
+                <h2>Connected Clients</h2>
+                <div id="clients-grid" class="clients-grid">
+                    <!-- Client cards will be inserted here -->
+                </div>
+            </section>
+
+            <section class="volumes">
+                <h2>Volume Details</h2>
+                <div id="volumes-container" class="volumes-container">
+                    <!-- Volume details will be inserted here -->
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>Last updated: <span id="last-updated">Never</span></p>
+            <p>Auto-refresh: <span id="auto-refresh">Enabled</span></p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
