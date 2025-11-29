@@ -10,6 +10,7 @@ let currentDashboard = 'health';
 let pingHistory = [];
 let pingHourChart = null;
 let ping24hChart = null;
+let ws = null; // WebSocket connection to server
 
 // =============== INITIALIZATION ===============
 
@@ -43,8 +44,8 @@ async function init() {
     // Add hidden update hotkey
     setupUpdateHotkey();
 
-    // Initialize mock WebSocket status (will be replaced with real WebSocket)
-    updateWebSocketStatus(false);
+    // Connect to server via WebSocket
+    connectWebSocket();
 
     console.log('✅ Dashboard initialized');
 }
@@ -96,6 +97,103 @@ function switchDashboard(dashboard) {
     loadDashboardData();
 }
 
+// =============== WEBSOCKET CONNECTION ===============
+
+function connectWebSocket() {
+    // Get VPN IP from server (via IPC)
+    window.vpnAPI.getServerInfo().then(serverInfo => {
+        const vpnIP = serverInfo.vpn_ip || '10.8.0.2'; // Default to first client IP
+        const serverURL = `wss://95.217.238.72:443/ws?vpn_ip=${vpnIP}`;
+
+        console.log(`🔌 Connecting to WebSocket: ${serverURL}`);
+
+        ws = new WebSocket(serverURL);
+
+        ws.onopen = () => {
+            console.log('✅ WebSocket connected');
+            updateWebSocketStatus(true);
+
+            // Request ping history immediately
+            ws.send(JSON.stringify({ type: 'get_ping_history' }));
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+                handleWebSocketMessage(msg);
+            } catch (error) {
+                console.error('Failed to parse WebSocket message:', error);
+            }
+        };
+
+        ws.onerror = (error) => {
+            console.error('❌ WebSocket error:', error);
+            updateWebSocketStatus(false);
+        };
+
+        ws.onclose = () => {
+            console.log('🔌 WebSocket disconnected, reconnecting in 5s...');
+            updateWebSocketStatus(false);
+
+            // Reconnect after 5 seconds
+            setTimeout(connectWebSocket, 5000);
+        };
+    }).catch(error => {
+        console.error('Failed to get server info:', error);
+        // Retry connection in 5 seconds
+        setTimeout(connectWebSocket, 5000);
+    });
+}
+
+function handleWebSocketMessage(msg) {
+    switch (msg.type) {
+        case 'ping_history':
+            // Received full ping history from server
+            console.log(`📊 Received ${msg.history.length} ping records`);
+            pingHistory = msg.history;
+
+            // Re-render health dashboard if we're on it
+            if (currentDashboard === 'health') {
+                renderHealthCharts();
+                renderPingHistoryTable();
+                renderHealthMetrics();
+            }
+            break;
+
+        case 'ping_update':
+            // Real-time ping update
+            const newPing = {
+                timestamp: msg.timestamp,
+                target: msg.target,
+                latency: msg.latency,
+                success: msg.success
+            };
+
+            pingHistory.push(newPing);
+
+            // Keep only last 2880 records (24 hours)
+            if (pingHistory.length > 2880) {
+                pingHistory = pingHistory.slice(-2880);
+            }
+
+            // Update UI if on health dashboard
+            if (currentDashboard === 'health') {
+                renderHealthCharts();
+                renderPingHistoryTable();
+                renderHealthMetrics();
+            }
+            break;
+
+        case 'update_available':
+            console.log('🔄 Update available:', msg.version);
+            // Auto-update will be handled by the client process
+            break;
+
+        default:
+            console.log('Unknown message type:', msg.type);
+    }
+}
+
 // =============== DATA LOADING ===============
 
 async function loadDashboardData() {
@@ -122,8 +220,8 @@ async function loadHealthData() {
         // Get VPN peers
         peers = await window.vpnAPI.getPeers();
 
-        // Generate mock ping data (will be replaced with real data)
-        pingHistory = generateMockPingHistory();
+        // Ping history will be loaded via WebSocket
+        // (No need to generate mock data - it comes from server)
 
         // Render health dashboard
         renderHealthMetrics();

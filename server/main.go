@@ -41,6 +41,14 @@ type PeerInfo struct {
 	OS         string `json:"os"`
 }
 
+// PingRecord represents a single ping measurement
+type PingRecord struct {
+	Timestamp int64  `json:"timestamp"` // milliseconds since epoch
+	Target    string `json:"target"`    // IP address being pinged
+	Latency   int    `json:"latency"`   // milliseconds
+	Success   bool   `json:"success"`   // whether ping succeeded
+}
+
 type VPNServer struct {
 	listenAddr   string
 	encryption   bool
@@ -61,6 +69,10 @@ type VPNServer struct {
 	wsClients      map[string]*websocket.Conn // key: VPN IP address, value: WebSocket connection
 	wsClientsMutex sync.RWMutex
 	wsUpgrader     websocket.Upgrader
+	// Ping history tracking for health monitoring
+	pingHistory      []PingRecord // Last 2880 pings (24 hours at 30-second intervals)
+	pingHistoryMutex sync.RWMutex
+	maxPingHistory   int // Maximum number of ping records to keep
 }
 
 func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
@@ -77,6 +89,8 @@ func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
 		wsUpgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true }, // Allow all origins for VPN clients
 		},
+		pingHistory:    make([]PingRecord, 0, 2880),
+		maxPingHistory: 2880, // 24 hours at 30-second intervals
 	}
 }
 
@@ -767,14 +781,47 @@ func (s *VPNServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[WS] Client %s disconnected from WebSocket", vpnIP)
 	}()
 
-	// Read messages (mostly just keep-alive pings)
+	// Read and handle messages
 	for {
-		_, _, err := conn.ReadMessage()
+		var msg map[string]interface{}
+		err := conn.ReadJSON(&msg)
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("[WS] Read error from %s: %v", vpnIP, err)
 			}
 			break
+		}
+
+		// Handle different message types
+		msgType, ok := msg["type"].(string)
+		if !ok {
+			continue
+		}
+
+		switch msgType {
+		case "get_ping_history":
+			// Send ping history to client
+			s.pingHistoryMutex.RLock()
+			history := make([]PingRecord, len(s.pingHistory))
+			copy(history, s.pingHistory)
+			s.pingHistoryMutex.RUnlock()
+
+			response := map[string]interface{}{
+				"type":    "ping_history",
+				"history": history,
+			}
+
+			if err := conn.WriteJSON(response); err != nil {
+				log.Printf("[WS] Failed to send ping history to %s: %v", vpnIP, err)
+			} else {
+				log.Printf("[WS] Sent %d ping records to %s", len(history), vpnIP)
+			}
+
+		case "ping":
+			// Keep-alive ping, respond with pong
+			if err := conn.WriteJSON(map[string]string{"type": "pong"}); err != nil {
+				log.Printf("[WS] Failed to send pong to %s: %v", vpnIP, err)
+			}
 		}
 	}
 }
@@ -889,7 +936,96 @@ func main() {
 	// Start continuous deployment monitor
 	go server.monitorGitUpdates()
 
+	// Start ping health monitoring
+	go server.monitorPingHealth()
+
 	log.Fatal(server.Start())
+}
+
+// recordPing adds a ping record to history, maintaining maxPingHistory limit
+func (s *VPNServer) recordPing(target string, latency int, success bool) {
+	s.pingHistoryMutex.Lock()
+	defer s.pingHistoryMutex.Unlock()
+
+	record := PingRecord{
+		Timestamp: time.Now().UnixMilli(),
+		Target:    target,
+		Latency:   latency,
+		Success:   success,
+	}
+
+	s.pingHistory = append(s.pingHistory, record)
+
+	// Trim to maxPingHistory if exceeded
+	if len(s.pingHistory) > s.maxPingHistory {
+		s.pingHistory = s.pingHistory[len(s.pingHistory)-s.maxPingHistory:]
+	}
+}
+
+// pingTarget pings a specific IP address and returns latency and success
+func pingTarget(target string) (int, bool) {
+	start := time.Now()
+
+	// Use ICMP ping (requires root on Linux, works on macOS)
+	cmd := exec.Command("ping", "-c", "1", "-W", "2", target)
+	err := cmd.Run()
+
+	elapsed := time.Since(start).Milliseconds()
+
+	if err != nil {
+		return int(elapsed), false
+	}
+
+	return int(elapsed), true
+}
+
+// monitorPingHealth periodically pings the server's public IP and VPN clients
+func (s *VPNServer) monitorPingHealth() {
+	// Ping interval: 30 seconds (to generate 2880 records in 24 hours)
+	pingInterval := 30 * time.Second
+
+	// Target: server's own public IP for now
+	// In production, this could ping all connected peers
+	target := "95.217.238.72" // Server's public IP
+
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
+
+	log.Printf("[PING] Starting health monitoring (target: %s, interval: %v)", target, pingInterval)
+
+	for range ticker.C {
+		latency, success := pingTarget(target)
+		s.recordPing(target, latency, success)
+
+		if success {
+			log.Printf("[PING] %s: %dms", target, latency)
+		} else {
+			log.Printf("[PING] %s: FAILED", target)
+		}
+
+		// Broadcast ping update to all connected WebSocket clients
+		s.broadcastPingUpdate(target, latency, success)
+	}
+}
+
+// broadcastPingUpdate sends real-time ping updates to all WebSocket clients
+func (s *VPNServer) broadcastPingUpdate(target string, latency int, success bool) {
+	s.wsClientsMutex.RLock()
+	defer s.wsClientsMutex.RUnlock()
+
+	message := map[string]interface{}{
+		"type":      "ping_update",
+		"timestamp": time.Now().UnixMilli(),
+		"target":    target,
+		"latency":   latency,
+		"success":   success,
+	}
+
+	for vpnIP, conn := range s.wsClients {
+		if err := conn.WriteJSON(message); err != nil {
+			log.Printf("[PING] Failed to send update to %s: %v", vpnIP, err)
+		}
+	}
 }
 
 // monitorGitUpdates polls Git repository for changes and broadcasts updates to all clients
