@@ -857,8 +857,50 @@ func (c *VPNClient) connectWebSocket() {
 	c.wsConn = conn
 	log.Printf("[WS] Connected successfully for real-time signaling")
 
+	// Report version to server
+	go c.reportVersion()
+
 	// Handle incoming WebSocket messages
 	go c.handleWebSocketMessages()
+}
+
+// reportVersion sends the client's Git commit version to the server
+func (c *VPNClient) reportVersion() {
+	if c.wsConn == nil {
+		return
+	}
+
+	// Get current Git commit
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = filepath.Dir(filepath.Dir(os.Args[0])) // Repo root
+	output, err := cmd.Output()
+
+	var commit string
+	if err == nil {
+		commit = strings.TrimSpace(string(output))
+	} else {
+		commit = "unknown"
+		log.Printf("[VERSION] Failed to get Git commit: %v", err)
+	}
+
+	// Get hostname
+	hostname, _ := os.Hostname()
+
+	// Send version report to server
+	versionMsg := map[string]interface{}{
+		"type":     "version_report",
+		"commit":   commit,
+		"vpn_ip":   c.assignedIP,
+		"hostname": hostname,
+		"os":       "darwin", // TODO: detect OS properly
+	}
+
+	err = c.wsConn.WriteJSON(versionMsg)
+	if err != nil {
+		log.Printf("[VERSION] Failed to send version report: %v", err)
+	} else {
+		log.Printf("[VERSION] Reported version %s to server", commit[:8])
+	}
 }
 
 // handleWebSocketMessages receives and processes WebSocket messages from the server

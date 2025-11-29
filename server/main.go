@@ -74,6 +74,9 @@ type VPNServer struct {
 	pingHistory      []PingRecord // Last 2880 pings (24 hours at 30-second intervals)
 	pingHistoryMutex sync.RWMutex
 	maxPingHistory   int // Maximum number of ping records to keep
+	// Client version tracking
+	clientVersions      map[string]string // key: VPN IP, value: Git commit
+	clientVersionsMutex sync.RWMutex
 }
 
 func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
@@ -92,6 +95,7 @@ func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
 		},
 		pingHistory:    make([]PingRecord, 0, 2880),
 		maxPingHistory: 2880, // 24 hours at 30-second intervals
+		clientVersions: make(map[string]string),
 	}
 }
 
@@ -822,6 +826,37 @@ func (s *VPNServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Keep-alive ping, respond with pong
 			if err := conn.WriteJSON(map[string]string{"type": "pong"}); err != nil {
 				log.Printf("[WS] Failed to send pong to %s: %v", vpnIP, err)
+			}
+
+		case "version_report":
+			// Client reporting its Git commit version
+			commit, _ := msg["commit"].(string)
+			hostname, _ := msg["hostname"].(string)
+
+			s.clientVersionsMutex.Lock()
+			s.clientVersions[vpnIP] = commit
+			s.clientVersionsMutex.Unlock()
+
+			log.Printf("[VERSION] Client %s (%s) reported version: %s", vpnIP, hostname, commit[:8])
+
+		case "get_client_versions":
+			// Desktop app requesting all client versions
+			s.clientVersionsMutex.RLock()
+			versions := make(map[string]string)
+			for ip, commit := range s.clientVersions {
+				versions[ip] = commit
+			}
+			s.clientVersionsMutex.RUnlock()
+
+			response := map[string]interface{}{
+				"type":     "client_versions",
+				"versions": versions,
+			}
+
+			if err := conn.WriteJSON(response); err != nil {
+				log.Printf("[WS] Failed to send client versions to %s: %v", vpnIP, err)
+			} else {
+				log.Printf("[WS] Sent %d client versions to %s", len(versions), vpnIP)
 			}
 		}
 	}
