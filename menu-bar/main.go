@@ -1209,6 +1209,15 @@ func launchDesktopApp() {
 
 // watchDesktopApp monitors the desktop app and quits menu bar if it quits
 func watchDesktopApp() {
+	// Check if desktop app is installed
+	desktopAppPath := "/Applications/Family VPN.app"
+	if _, err := os.Stat(desktopAppPath); os.IsNotExist(err) {
+		log.Printf("Desktop app not installed, skipping monitoring")
+		return
+	}
+
+	log.Printf("Desktop app installed, will monitor and quit menu bar if desktop app quits")
+
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
