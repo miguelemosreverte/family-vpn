@@ -144,18 +144,13 @@ func (w *Watchdog) startDesktopApp() {
 
 	log.Println("Starting desktop app...")
 
-	// Use 'open' command which handles GUI session properly
+	// Use 'open' command which properly associates with Dock icon
+	// Do NOT use direct execution as that creates a separate Dock icon
 	cmd := exec.Command("open", "-a", "Family VPN")
 	if err := cmd.Run(); err != nil {
 		log.Printf("Failed to start desktop app via 'open': %v", err)
-		// Fallback: try direct execution
-		directCmd := exec.Command("/Applications/Family VPN.app/Contents/MacOS/Family VPN")
-		if err := directCmd.Start(); err != nil {
-			log.Printf("Failed to start desktop app directly: %v", err)
-		} else {
-			w.desktopPID = directCmd.Process.Pid
-			log.Printf("Desktop app started directly with PID %d", w.desktopPID)
-		}
+		// Don't fallback to direct execution - it creates duplicate Dock icons
+		// The app will be started on next health check or when user clicks Dock icon
 	} else {
 		log.Println("Desktop app started via 'open' command")
 	}
