@@ -229,11 +229,15 @@ ipcMain.handle('get-volumes', async (event, peer) => {
 });
 
 function getUsernameForPeer(peer) {
-  // Extract username from hostname or use default
-  if (peer.hostname.includes('miguel')) {
-    return 'miguel_lemos';
+  // Extract username from hostname
+  const hostname = peer.hostname.toLowerCase();
+
+  if (hostname.includes('anastasiia')) {
+    return 'anastasiia';
   }
-  return 'miguel_lemos'; // Default
+
+  // Default to miguel_lemos for all other machines
+  return 'miguel_lemos';
 }
 
 app.whenReady().then(() => {
