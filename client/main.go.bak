@@ -24,7 +24,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/songgao/water"
 )
 
@@ -71,11 +70,6 @@ type VPNClient struct {
 	assignedIP   string // VPN IP assigned by server
 	peers        []*PeerInfo // List of connected peers
 	peersMutex   sync.RWMutex
-	// WebSocket for real-time signaling
-	wsConn     *websocket.Conn
-	ipcServer  *IPCServer // Reference to IPC server for signal delivery
-	// IPv6 leak prevention
-	ipv6WasEnabled bool // Track if IPv6 was enabled before VPN connected
 }
 
 func NewVPNClient(serverAddr string, encryption bool, key []byte, noTimeout bool, useTLS bool) *VPNClient {
@@ -222,27 +216,8 @@ func (c *VPNClient) routeAllTraffic() error {
 		} else {
 			log.Println("DNS configured: 1.1.1.1 (Cloudflare), 8.8.8.8 (Google) through VPN")
 		}
-
-		// Prevent IPv6 leaks by disabling IPv6 on Wi-Fi
-		// First, check if IPv6 is currently enabled
-		cmd = exec.Command("networksetup", "-getinfo", "Wi-Fi")
-		output, err := cmd.Output()
-		if err == nil {
-			outputStr := string(output)
-			// Check if IPv6 is set to "Automatic" or "Manual" (enabled states)
-			c.ipv6WasEnabled = strings.Contains(outputStr, "IPv6: Automatic") ||
-			                   strings.Contains(outputStr, "IPv6: Manual")
-		}
-
-		// Disable IPv6 to prevent leaks
-		cmd = exec.Command("networksetup", "-setv6off", "Wi-Fi")
-		if err := cmd.Run(); err != nil {
-			log.Printf("Warning: failed to disable IPv6: %v (IPv6 may leak)", err)
-		} else {
-			log.Println("IPv6 disabled to prevent location leaks")
-		}
 	} else {
-		// Linux: Modify /etc/resolv.conf and disable IPv6
+		// Linux: Modify /etc/resolv.conf
 		// TODO: Implement for Linux if needed
 	}
 
@@ -272,16 +247,6 @@ func (c *VPNClient) restoreRouting() error {
 			log.Printf("Warning: failed to restore DNS: %v", err)
 		} else {
 			log.Println("DNS restored to automatic (DHCP)")
-		}
-
-		// Restore IPv6 if it was enabled before VPN connected
-		if c.ipv6WasEnabled {
-			cmd = exec.Command("networksetup", "-setv6automatic", "Wi-Fi")
-			if err := cmd.Run(); err != nil {
-				log.Printf("Warning: failed to restore IPv6: %v", err)
-			} else {
-				log.Println("IPv6 restored to automatic")
-			}
 		}
 	} else {
 		// Linux routing restoration
@@ -484,13 +449,9 @@ func (c *VPNClient) Connect() error {
 
 	// Start IPC server for extensions
 	ipcServer := NewIPCServer(8889, c)
-	c.ipcServer = ipcServer // Store reference for WebSocket signal delivery
 	if err := ipcServer.Start(); err != nil {
 		log.Printf("[IPC] Failed to start IPC server: %v", err)
 	}
-
-	// Connect to WebSocket for real-time signaling
-	go c.connectWebSocket()
 
 	// TUN -> Server (egress)
 	go func() {
@@ -776,7 +737,7 @@ func (c *VPNClient) handleControlMessage(message []byte) {
 	if strings.HasPrefix(command, "UPDATE_") {
 		log.Printf("[CONTROL] Update signal received: %s", command)
 		// Write component-specific update signal that menu bar app will detect
-		homeDir, err := getRealUserHomeDir()
+		homeDir, err := os.UserHomeDir()
 		if err != nil {
 			log.Printf("[CONTROL] Failed to get home dir: %v", err)
 			return
@@ -799,7 +760,7 @@ func (c *VPNClient) handleControlMessage(message []byte) {
 
 // writePeerListToFile writes the peer list to a file for the menu bar app
 func (c *VPNClient) writePeerListToFile() {
-	homeDir, err := getRealUserHomeDir()
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		log.Printf("[PEERS] Failed to get home dir: %v", err)
 		return
@@ -825,166 +786,24 @@ func (c *VPNClient) writePeerListToFile() {
 
 // handleVideoCallMessage handles incoming video call signaling from peers
 func (c *VPNClient) handleVideoCallMessage(data string) {
-	// Use IPC queue for real-time signal delivery to extensions
-	if c.ipcServer != nil {
-		log.Printf("[VIDEO] Queueing video signal via IPC")
-		c.ipcServer.QueueSignal("video", "", []byte(data))
-	} else {
-		log.Printf("[VIDEO] Warning: IPC server not available, cannot deliver signal")
-	}
-}
-
-// connectWebSocket connects to the server's WebSocket endpoint for real-time signaling
-func (c *VPNClient) connectWebSocket() {
-	// Extract server host from serverAddr
-	serverHost, _, err := net.SplitHostPort(c.serverAddr)
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		log.Printf("[WS] Failed to parse server address: %v", err)
+		log.Printf("[VIDEO] Failed to get home dir: %v", err)
 		return
 	}
 
-	// Connect to WebSocket endpoint (port 9000 for HTTP/WebSocket server)
-	wsURL := fmt.Sprintf("ws://%s:9000/ws?vpn_ip=%s", serverHost, c.assignedIP)
-	log.Printf("[WS] Connecting to %s", wsURL)
-
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		log.Printf("[WS] Failed to connect: %v", err)
-		log.Printf("[WS] Will fall back to legacy control messages")
-		return
-	}
-
-	c.wsConn = conn
-	log.Printf("[WS] Connected successfully for real-time signaling")
-
-	// Report version to server
-	go c.reportVersion()
-
-	// Handle incoming WebSocket messages
-	go c.handleWebSocketMessages()
-}
-
-// reportVersion sends the client's Git commit version to the server
-func (c *VPNClient) reportVersion() {
-	if c.wsConn == nil {
-		return
-	}
-
-	// Get current Git commit
-	cmd := exec.Command("git", "rev-parse", "HEAD")
-	cmd.Dir = filepath.Dir(filepath.Dir(os.Args[0])) // Repo root
-	output, err := cmd.Output()
-
-	var commit string
-	if err == nil {
-		commit = strings.TrimSpace(string(output))
+	// Write video call signal to file for menu bar app to detect
+	signalFile := filepath.Join(homeDir, ".family-vpn-video-signal")
+	if err := os.WriteFile(signalFile, []byte(data), 0644); err != nil {
+		log.Printf("[VIDEO] Failed to write video signal: %v", err)
 	} else {
-		commit = "unknown"
-		log.Printf("[VERSION] Failed to get Git commit: %v", err)
-	}
-
-	// Get hostname
-	hostname, _ := os.Hostname()
-
-	// Send version report to server
-	versionMsg := map[string]interface{}{
-		"type":     "version_report",
-		"commit":   commit,
-		"vpn_ip":   c.assignedIP,
-		"hostname": hostname,
-		"os":       "darwin", // TODO: detect OS properly
-	}
-
-	err = c.wsConn.WriteJSON(versionMsg)
-	if err != nil {
-		log.Printf("[VERSION] Failed to send version report: %v", err)
-	} else {
-		log.Printf("[VERSION] Reported version %s to server", commit[:8])
-	}
-}
-
-// handleWebSocketMessages receives and processes WebSocket messages from the server
-func (c *VPNClient) handleWebSocketMessages() {
-	defer func() {
-		if c.wsConn != nil {
-			c.wsConn.Close()
-			c.wsConn = nil
-		}
-		log.Printf("[WS] WebSocket connection closed")
-	}()
-
-	for c.enabled {
-		var msg map[string]interface{}
-		err := c.wsConn.ReadJSON(&msg)
-		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("[WS] Read error: %v", err)
-			}
-			break
-		}
-
-		msgType, _ := msg["type"].(string)
-		data, _ := msg["data"].(string)
-
-		log.Printf("[WS] Received message type: %s", msgType)
-
-		// Route signal based on type
-		if msgType == "signal" {
-			// Parse signal data to determine extension
-			if strings.HasPrefix(data, "VIDEO_CALL:") {
-				videoData := data[11:] // Skip "VIDEO_CALL:" prefix
-				log.Printf("[WS] Routing video signal to video extension via IPC")
-				if c.ipcServer != nil {
-					c.ipcServer.QueueSignal("video", "", []byte(videoData))
-				}
-			}
-		} else if msgType == "update" {
-			// Layer 0 Update Protocol: component-aware updates
-			payload, _ := msg["payload"].(map[string]interface{})
-			if payload != nil {
-				domain, _ := payload["domain"].(string)
-				action, _ := payload["action"].(string)
-				commit, _ := payload["commit"].(string)
-
-				log.Printf("[L0] Update received: domain=%s action=%s commit=%s", domain, action, commit[:8])
-				log.Printf("[L0] Triggering component-aware auto-update...")
-
-				// Run auto-update script (now component-aware)
-				go func() {
-					cmd := exec.Command("bash", "client/auto-update.sh")
-					cmd.Dir = filepath.Dir(filepath.Dir(os.Args[0])) // Go up to repo root
-					output, err := cmd.CombinedOutput()
-					if err != nil {
-						log.Printf("[L0] Auto-update failed: %v\nOutput: %s", err, output)
-					} else {
-						log.Printf("[L0] Auto-update success:\n%s", output)
-					}
-				}()
-			}
-		} else if msgType == "update_available" {
-			// Legacy update protocol (backward compatibility)
-			version, _ := msg["version"].(string)
-			log.Printf("[UPDATE] New version available: %s", version)
-			log.Printf("[UPDATE] Triggering auto-update...")
-
-			// Run auto-update script in background
-			go func() {
-				cmd := exec.Command("bash", "client/auto-update.sh")
-				cmd.Dir = filepath.Dir(filepath.Dir(os.Args[0])) // Go up to repo root
-				output, err := cmd.CombinedOutput()
-				if err != nil {
-					log.Printf("[UPDATE] Failed: %v\nOutput: %s", err, output)
-				} else {
-					log.Printf("[UPDATE] Success:\n%s", output)
-				}
-			}()
-		}
+		log.Printf("[VIDEO] Wrote video call signal to %s", signalFile)
 	}
 }
 
 // monitorOutgoingVideoSignals monitors for outgoing video signals and sends them via VPN
 func (c *VPNClient) monitorOutgoingVideoSignals(conn net.Conn) {
-	homeDir, err := getRealUserHomeDir()
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		log.Printf("[VIDEO] Failed to get home dir: %v", err)
 		return
@@ -1104,20 +923,6 @@ func main() {
 	key := []byte("0123456789abcdef0123456789abcdef") // 32 bytes for AES-256
 
 	client := NewVPNClient(*server, *encrypt, key, *noTimeout, *useTLS)
-
-	// Setup signal handler to ensure routing cleanup on kill/interrupt
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		sig := <-sigChan
-		log.Printf("Received signal %v, cleaning up...", sig)
-		if err := client.Disconnect(); err != nil {
-			log.Printf("Error during cleanup: %v", err)
-		}
-		os.Exit(0)
-	}()
-
 	if err := client.Connect(); err != nil {
 		log.Fatal(err)
 	}
