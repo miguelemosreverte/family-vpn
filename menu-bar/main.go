@@ -636,50 +636,85 @@ func connectVPN() {
 
 func handleConnectionFailure() {
 	// CRITICAL: Clean up routing to restore internet access
-	log.Println("⚠️  VPN connection failed/died - running routing cleanup...")
+	// DESIGN: Use Wi-Fi restart method first - it doesn't require sudo!
+	log.Println("⚠️  VPN connection failed/died - restoring network...")
 
-	// Get the path to fix-routing.sh script
-	exePath, err := os.Executable()
-	if err == nil {
-		appDir := filepath.Dir(exePath)
-		cleanupScript := filepath.Join(filepath.Dir(appDir), "client", "fix-routing.sh")
+	// Method 1: Wi-Fi restart (NO SUDO REQUIRED - works reliably)
+	log.Println("Restarting Wi-Fi to restore routing...")
 
-		// If not found, try same directory
-		if _, err := os.Stat(cleanupScript); os.IsNotExist(err) {
-			cleanupScript = filepath.Join(appDir, "fix-routing.sh")
+	// Get Wi-Fi interface
+	wifiCmd := exec.Command("networksetup", "-listallhardwareports")
+	wifiOutput, _ := wifiCmd.Output()
+	wifiInterface := "en0" // default
+	lines := strings.Split(string(wifiOutput), "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "Wi-Fi") && i+1 < len(lines) {
+			parts := strings.Fields(lines[i+1])
+			if len(parts) >= 2 {
+				wifiInterface = parts[1]
+			}
+			break
 		}
+	}
 
-		// Run cleanup script with sudo (needs password for route commands)
-		if _, err := os.Stat(cleanupScript); err == nil {
-			log.Printf("Running routing cleanup script: %s", cleanupScript)
+	// Turn Wi-Fi off
+	offCmd := exec.Command("networksetup", "-setairportpower", wifiInterface, "off")
+	offCmd.Run()
+	time.Sleep(2 * time.Second)
 
-			// Get sudo password
-			password := os.Getenv("SUDO_PASSWORD")
-			if password == "" {
-				log.Println("⚠️  SUDO_PASSWORD not set - cleanup may fail")
+	// Turn Wi-Fi on
+	onCmd := exec.Command("networksetup", "-setairportpower", wifiInterface, "on")
+	onCmd.Run()
+
+	// Wait for connectivity
+	log.Println("Waiting for Wi-Fi to reconnect...")
+	for i := 0; i < 10; i++ {
+		time.Sleep(time.Second)
+		pingCmd := exec.Command("ping", "-c", "1", "-W", "1", "8.8.8.8")
+		if pingCmd.Run() == nil {
+			log.Println("✓ Internet connectivity restored!")
+			// Restore IPv6
+			exec.Command("networksetup", "-setv6automatic", "Wi-Fi").Run()
+			break
+		}
+	}
+
+	// Fallback: try the cleanup script if Wi-Fi restart didn't work
+	pingCheck := exec.Command("ping", "-c", "1", "-W", "2", "8.8.8.8")
+	if pingCheck.Run() != nil {
+		log.Println("Wi-Fi restart didn't restore connectivity, trying cleanup script...")
+
+		exePath, err := os.Executable()
+		if err == nil {
+			appDir := filepath.Dir(exePath)
+			cleanupScript := filepath.Join(filepath.Dir(appDir), "client", "fix-routing.sh")
+
+			if _, err := os.Stat(cleanupScript); os.IsNotExist(err) {
+				cleanupScript = filepath.Join(appDir, "fix-routing.sh")
 			}
 
-			// Run script with sudo
-			cleanupCmd := exec.Command("sudo", "-S", "bash", cleanupScript)
+			if _, err := os.Stat(cleanupScript); err == nil {
+				log.Printf("Running cleanup script: %s", cleanupScript)
 
-			// Pass password to sudo via stdin
-			if password != "" {
-				stdin, err := cleanupCmd.StdinPipe()
-				if err == nil {
-					go func() {
-						defer stdin.Close()
-						io.WriteString(stdin, password+"\n")
-					}()
+				password := os.Getenv("SUDO_PASSWORD")
+				cleanupCmd := exec.Command("sudo", "-S", "bash", cleanupScript)
+
+				if password != "" {
+					stdin, err := cleanupCmd.StdinPipe()
+					if err == nil {
+						go func() {
+							defer stdin.Close()
+							io.WriteString(stdin, password+"\n")
+						}()
+					}
+				}
+
+				if output, err := cleanupCmd.CombinedOutput(); err != nil {
+					log.Printf("Cleanup script error: %v\nOutput: %s", err, string(output))
+				} else {
+					log.Printf("✓ Routing cleanup complete: %s", string(output))
 				}
 			}
-
-			if output, err := cleanupCmd.CombinedOutput(); err != nil {
-				log.Printf("Cleanup script error: %v\nOutput: %s", err, string(output))
-			} else {
-				log.Printf("✓ Routing cleanup complete: %s", string(output))
-			}
-		} else {
-			log.Printf("⚠️  Cleanup script not found at %s - routing may need manual fix", cleanupScript)
 		}
 	}
 

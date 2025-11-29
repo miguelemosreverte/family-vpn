@@ -1,6 +1,9 @@
 #!/bin/bash
 # Family VPN Uninstall Script
 # Removes all installed components for fresh reinstallation
+#
+# SAFETY FIRST: This script restores network routing BEFORE removing
+# any VPN components to prevent leaving the machine without internet.
 
 echo "🗑️  Family VPN Uninstall Script"
 echo "================================"
@@ -18,7 +21,90 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 echo "📍 Working directory: $SCRIPT_DIR"
 echo ""
 
-# Stop running processes
+# =============================================================================
+# STEP 1: RESTORE NETWORK ROUTING FIRST (SAFETY CRITICAL)
+# =============================================================================
+echo "🛡️  Restoring network routing (safety first)..."
+echo "------------------------------------------------"
+
+restore_routing() {
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS - Get the Wi-Fi interface
+        WIFI_INTERFACE=$(networksetup -listallhardwareports | awk '/Wi-Fi/{getline; print $2}')
+
+        # Remove any VPN-specific routes (like route to VPN server)
+        # These are routes that go through the normal gateway to reach VPN server
+        VPN_SERVER_ROUTES=$(netstat -rn -f inet | grep -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\s+192\.168\." | awk '{print $1}')
+        for route in $VPN_SERVER_ROUTES; do
+            sudo route -n delete "$route" 2>/dev/null && echo -e "${GREEN}✓ Removed VPN server route: $route${NC}"
+        done
+
+        # Remove any routes through utun interfaces
+        for utun in $(ifconfig 2>/dev/null | grep "^utun" | cut -d: -f1); do
+            sudo route -n delete default -ifscope $utun 2>/dev/null && echo -e "${GREEN}✓ Removed default route via $utun${NC}"
+        done
+
+        # Check if we have a working default route
+        if ! route -n get default 2>/dev/null | grep -q "gateway:"; then
+            echo -e "${YELLOW}⚠️  No default route found, restoring...${NC}"
+
+            # Try to find the router
+            ROUTER=""
+
+            # Method 1: Get from DHCP
+            ROUTER=$(ipconfig getsummary "$WIFI_INTERFACE" 2>/dev/null | grep "router" | awk '{print $3}')
+
+            # Method 2: Common router IPs
+            if [ -z "$ROUTER" ]; then
+                for TEST_IP in 192.168.0.1 192.168.1.1 192.168.1.254 10.0.0.1; do
+                    if ping -c 1 -W 1 $TEST_IP >/dev/null 2>&1; then
+                        ROUTER=$TEST_IP
+                        break
+                    fi
+                done
+            fi
+
+            if [ -n "$ROUTER" ]; then
+                sudo route -n add default "$ROUTER" 2>/dev/null && echo -e "${GREEN}✓ Restored default route via $ROUTER${NC}"
+            else
+                # Last resort: restart Wi-Fi to get fresh DHCP
+                echo -e "${YELLOW}⚠️  Restarting Wi-Fi to restore routing...${NC}"
+                networksetup -setairportpower "$WIFI_INTERFACE" off 2>/dev/null
+                sleep 2
+                networksetup -setairportpower "$WIFI_INTERFACE" on 2>/dev/null
+                sleep 3
+                echo -e "${GREEN}✓ Wi-Fi restarted${NC}"
+            fi
+        else
+            echo -e "${GREEN}✓ Default route already exists${NC}"
+        fi
+
+        # Restore IPv6
+        sudo networksetup -setv6automatic Wi-Fi 2>/dev/null && echo -e "${GREEN}✓ IPv6 restored${NC}"
+
+    else
+        # Linux
+        sudo ip route del default dev tun0 2>/dev/null
+        echo -e "${GREEN}✓ Removed any tun0 default route${NC}"
+    fi
+}
+
+restore_routing
+
+# Verify internet connectivity before proceeding
+echo ""
+echo "🔍 Verifying internet connectivity..."
+if ping -c 1 -W 3 8.8.8.8 >/dev/null 2>&1; then
+    echo -e "${GREEN}✓ Internet connectivity confirmed${NC}"
+else
+    echo -e "${YELLOW}⚠️  Internet may be limited, but proceeding with uninstall${NC}"
+fi
+
+echo ""
+
+# =============================================================================
+# STEP 2: STOP RUNNING PROCESSES
+# =============================================================================
 echo "🛑 Stopping running processes..."
 echo "--------------------------------"
 
