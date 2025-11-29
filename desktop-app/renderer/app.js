@@ -7,6 +7,13 @@ let volumeData = [];
 // Initialize app
 async function init() {
     console.log('🚀 Family VPN Dashboard starting...');
+
+    // Load saved theme
+    const savedTheme = localStorage.getItem('theme');
+    if (savedTheme === 'dark') {
+        document.body.classList.add('dark-mode');
+    }
+
     await loadData();
     setupEventListeners();
     startAutoRefresh();
@@ -214,6 +221,14 @@ function setupEventListeners() {
     document.getElementById('refresh-btn').addEventListener('click', () => {
         console.log('🔄 Manual refresh triggered');
         loadData();
+    });
+
+    // Theme toggle
+    document.getElementById('theme-toggle').addEventListener('click', () => {
+        document.body.classList.toggle('dark-mode');
+        const isDark = document.body.classList.contains('dark-mode');
+        localStorage.setItem('theme', isDark ? 'dark' : 'light');
+        console.log(`🎨 Theme switched to ${isDark ? 'dark' : 'light'} mode`);
     });
 }
 

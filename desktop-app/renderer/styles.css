@@ -27,12 +27,49 @@ header {
     border-bottom: 4px solid #000000;
 }
 
+.header-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
 header h1 {
     font-size: 32px;
     font-weight: 700;
     letter-spacing: -1px;
     font-family: "Georgia", serif;
-    margin-bottom: 10px;
+    margin: 0;
+}
+
+/* Theme Toggle Button */
+.theme-toggle {
+    background: #ffffff;
+    color: #000000;
+    border: 2px solid #ffffff;
+    padding: 8px 12px;
+    font-size: 20px;
+    cursor: pointer;
+    transition: all 0.3s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.theme-toggle:hover {
+    background: #f0f0f0;
+}
+
+.theme-toggle .icon-moon {
+    display: none;
+}
+
+body.dark-mode .theme-toggle .icon-sun {
+    display: none;
+}
+
+body.dark-mode .theme-toggle .icon-moon {
+    display: inline;
 }
 
 .header-stats {
@@ -394,4 +431,215 @@ footer {
 /* Blue accent - ONLY for statistics emphasis */
 .stat .value {
     color: #0066cc; /* WSJ blue for data */
+}
+
+/* Dark Mode Styles */
+body.dark-mode {
+    background: #1a1a1a;
+    color: #e0e0e0;
+}
+
+body.dark-mode #app {
+    background: #1a1a1a;
+}
+
+body.dark-mode header {
+    background: #ffffff;
+    color: #000000;
+    border-bottom: 4px solid #ffffff;
+}
+
+body.dark-mode .header-stats {
+    border-top: 1px solid #d0d0d0;
+}
+
+body.dark-mode .stat .label {
+    color: #606060;
+}
+
+body.dark-mode .stat .value {
+    color: #0066cc; /* Keep blue for data emphasis in both modes */
+}
+
+body.dark-mode .refresh-btn {
+    background: #000000;
+    color: #ffffff;
+    border: 1px solid #ffffff;
+}
+
+body.dark-mode .refresh-btn:hover {
+    background: #202020;
+}
+
+body.dark-mode main {
+    background: #0a0a0a;
+}
+
+body.dark-mode section h2 {
+    color: #ffffff;
+    border-bottom: 3px solid #ffffff;
+}
+
+body.dark-mode .client-card {
+    background: #1a1a1a;
+    border: 2px solid #ffffff;
+}
+
+body.dark-mode .client-card:hover {
+    box-shadow: 4px 4px 0 #ffffff;
+}
+
+body.dark-mode .card-header {
+    border-bottom: 1px solid #404040;
+}
+
+body.dark-mode .card-header h3 {
+    color: #ffffff;
+}
+
+body.dark-mode .status.healthy {
+    background: #1a1a1a;
+    color: #ffffff;
+    border-color: #a0a0a0;
+}
+
+body.dark-mode .status.warning {
+    background: #ffffff;
+    color: #000000;
+    border-color: #ffffff;
+}
+
+body.dark-mode .status.critical {
+    background: #ffffff;
+    color: #000000;
+    border-color: #ffffff;
+}
+
+body.dark-mode .info-row {
+    border-bottom: 1px solid #202020;
+}
+
+body.dark-mode .info-row .label {
+    color: #a0a0a0;
+}
+
+body.dark-mode .info-row .value {
+    color: #ffffff;
+}
+
+body.dark-mode .progress-bar {
+    background: #202020;
+    border: 2px solid #ffffff;
+}
+
+body.dark-mode .progress-fill.healthy {
+    background: repeating-linear-gradient(
+        45deg,
+        #404040,
+        #404040 4px,
+        #505050 4px,
+        #505050 8px
+    );
+}
+
+body.dark-mode .progress-fill.warning {
+    background: repeating-linear-gradient(
+        45deg,
+        #a0a0a0,
+        #a0a0a0 4px,
+        #c0c0c0 4px,
+        #c0c0c0 8px
+    );
+}
+
+body.dark-mode .progress-fill.critical {
+    background: repeating-linear-gradient(
+        45deg,
+        #ffffff,
+        #ffffff 4px,
+        #d0d0d0 4px,
+        #d0d0d0 8px
+    );
+}
+
+body.dark-mode .volume-section {
+    background: #1a1a1a;
+    border: 2px solid #ffffff;
+}
+
+body.dark-mode .volume-section h3 {
+    color: #ffffff;
+}
+
+body.dark-mode .volumes-table thead {
+    background: #ffffff;
+    color: #000000;
+}
+
+body.dark-mode .volumes-table th {
+    border-right: 1px solid #d0d0d0;
+}
+
+body.dark-mode .volumes-table td {
+    border-bottom: 1px solid #303030;
+    color: #e0e0e0;
+}
+
+body.dark-mode .volumes-table tbody tr:nth-child(even) {
+    background: #0f0f0f;
+}
+
+body.dark-mode .volumes-table tbody tr:hover {
+    background: #202020;
+}
+
+body.dark-mode .use-percent.healthy {
+    background: #1a1a1a;
+    color: #ffffff;
+    border-color: #ffffff;
+}
+
+body.dark-mode .use-percent.warning {
+    background: #303030;
+    color: #ffffff;
+}
+
+body.dark-mode .use-percent.critical {
+    background: #ffffff;
+    color: #000000;
+}
+
+body.dark-mode .client-card.error {
+    border-color: #ffffff;
+}
+
+body.dark-mode .error-message {
+    color: #ffffff;
+}
+
+body.dark-mode .error-banner {
+    background: #0f0f0f;
+    border: 3px solid #ffffff;
+}
+
+body.dark-mode .error-banner h3 {
+    color: #ffffff;
+}
+
+body.dark-mode footer {
+    background: #ffffff;
+    color: #000000;
+    border-top: 3px solid #ffffff;
+}
+
+body.dark-mode ::-webkit-scrollbar-track {
+    background: #202020;
+}
+
+body.dark-mode ::-webkit-scrollbar-thumb {
+    background: #ffffff;
+}
+
+body.dark-mode ::-webkit-scrollbar-thumb:hover {
+    background: #d0d0d0;
 }
