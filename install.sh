@@ -139,6 +139,25 @@ fi
 cd ..
 
 echo ""
+echo "🐕 Building Watchdog..."
+echo "-----------------------"
+
+# Build watchdog
+cd watchdog
+if [ ! -f "family-vpn-watchdog" ]; then
+    echo "Building watchdog..."
+    GOTOOLCHAIN=local go build -o family-vpn-watchdog . 2>/dev/null || go build -o family-vpn-watchdog .
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}❌ Failed to build watchdog${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✓ Watchdog built successfully${NC}"
+else
+    echo -e "${GREEN}✓ Watchdog already exists${NC}"
+fi
+cd ..
+
+echo ""
 echo "🎨 Generating App Icon..."
 echo "-------------------------"
 
@@ -246,6 +265,17 @@ run_sudo cp "client/fix-routing.sh" "$ROUTING_SCRIPT"
 run_sudo chmod +x "$ROUTING_SCRIPT"
 echo -e "${GREEN}✓ Routing fix script installed${NC}"
 
+# Install watchdog
+WATCHDOG_PATH="/usr/local/bin/family-vpn-watchdog"
+if [ -f "$WATCHDOG_PATH" ]; then
+    echo -e "${YELLOW}⚠️  Removing existing watchdog...${NC}"
+    run_sudo rm -f "$WATCHDOG_PATH"
+fi
+
+run_sudo cp "watchdog/family-vpn-watchdog" "/usr/local/bin/family-vpn-watchdog"
+run_sudo chmod +x "/usr/local/bin/family-vpn-watchdog"
+echo -e "${GREEN}✓ Watchdog installed to /usr/local/bin/${NC}"
+
 echo ""
 echo "🔐 Setting up configuration..."
 echo "------------------------------"
@@ -272,21 +302,40 @@ echo ""
 echo "🚀 Configuring auto-start and Dock..."
 echo "--------------------------------------"
 
-# Add to Login Items (start on login)
+# Install and start the watchdog service (manages all components)
+LAUNCHD_PLIST="$HOME/Library/LaunchAgents/com.family.vpn.watchdog.plist"
+mkdir -p "$HOME/Library/LaunchAgents"
+
+# Stop existing watchdog if running
+launchctl unload "$LAUNCHD_PLIST" 2>/dev/null
+
+# Install the plist
+cp "watchdog/com.family.vpn.watchdog.plist" "$LAUNCHD_PLIST"
+chmod 644 "$LAUNCHD_PLIST"
+
+# Load and start the watchdog
+launchctl load "$LAUNCHD_PLIST"
+echo -e "${GREEN}✓ Watchdog service installed and started${NC}"
+
+# Also add desktop app to Login Items for visibility (watchdog will manage it)
 osascript -e 'tell application "System Events" to make login item at end with properties {path:"/Applications/Family VPN.app", hidden:false}' 2>/dev/null && \
     echo -e "${GREEN}✓ Added to Login Items (starts on login)${NC}" || \
     echo -e "${YELLOW}⚠️  Could not add to Login Items - add manually in System Preferences${NC}"
 
-# Add to Dock using dockutil or defaults
-if command -v dockutil &> /dev/null; then
-    dockutil --add "/Applications/Family VPN.app" --no-restart 2>/dev/null
-    killall Dock 2>/dev/null
-    echo -e "${GREEN}✓ Added to Dock${NC}"
+# Add to Dock (only if not already there)
+if defaults read com.apple.dock persistent-apps 2>/dev/null | grep -q "Family VPN"; then
+    echo -e "${GREEN}✓ Already in Dock${NC}"
 else
-    # Use defaults to add to Dock
-    defaults write com.apple.dock persistent-apps -array-add "<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>/Applications/Family VPN.app</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>" 2>/dev/null
-    killall Dock 2>/dev/null
-    echo -e "${GREEN}✓ Added to Dock${NC}"
+    if command -v dockutil &> /dev/null; then
+        dockutil --add "/Applications/Family VPN.app" --no-restart 2>/dev/null
+        killall Dock 2>/dev/null
+        echo -e "${GREEN}✓ Added to Dock${NC}"
+    else
+        # Use defaults to add to Dock
+        defaults write com.apple.dock persistent-apps -array-add "<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>/Applications/Family VPN.app</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>" 2>/dev/null
+        killall Dock 2>/dev/null
+        echo -e "${GREEN}✓ Added to Dock${NC}"
+    fi
 fi
 
 echo ""
