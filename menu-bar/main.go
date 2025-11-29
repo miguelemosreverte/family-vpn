@@ -514,20 +514,28 @@ func connectVPN() {
 	}
 	appDir := filepath.Dir(exePath)
 
-	// Look for vpn-client in the parent directory's client folder
-	vpnClientPath := filepath.Join(filepath.Dir(appDir), "client", "vpn-client")
-
-	// If not found, try same directory
-	if _, err := os.Stat(vpnClientPath); os.IsNotExist(err) {
-		vpnClientPath = filepath.Join(appDir, "vpn-client")
+	// Look for vpn-client in multiple locations (in order of preference)
+	vpnClientPaths := []string{
+		"/usr/local/bin/family-vpn-client",                        // Installed location
+		filepath.Join(filepath.Dir(appDir), "client", "vpn-client"), // Development: relative to binary
+		filepath.Join(appDir, "vpn-client"),                        // Same directory as binary
 	}
 
-	// Check if vpn-client exists
-	if _, err := os.Stat(vpnClientPath); os.IsNotExist(err) {
-		dialog.Message("VPN client not found at:\n%s\n\nPlease build the VPN client first.", vpnClientPath).Title("Family VPN").Error()
+	var vpnClientPath string
+	for _, path := range vpnClientPaths {
+		if _, err := os.Stat(path); err == nil {
+			vpnClientPath = path
+			break
+		}
+	}
+
+	// Check if vpn-client was found
+	if vpnClientPath == "" {
+		dialog.Message("VPN client not found.\n\nPlease run the install script:\n./install.sh").Title("Family VPN").Error()
 		handleConnectionFailure()
 		return
 	}
+	log.Printf("Using VPN client: %s", vpnClientPath)
 
 	// Get sudo password from environment (.env file)
 	password := os.Getenv("SUDO_PASSWORD")
