@@ -145,6 +145,35 @@ function connectWebSocket() {
     });
 }
 
+// Layer 0 Update Protocol - Domain definitions
+const UpdateDomain = {
+    ALL: 'all',
+    CORE: 'core',
+    SERVER: 'server',
+    DESKTOP: 'desktop',
+    UI: 'ui',
+    MENUBAR: 'menubar',
+    EXTENSION: 'extension'
+};
+
+const UpdateAction = {
+    RELOAD: 'reload',
+    RESTART: 'restart',
+    NOTIFY: 'notify'
+};
+
+// Returns true if this receiver should handle the update
+function shouldHandleUpdate(msg, receiverDomain, receiverTarget = '') {
+    if (msg.domain === UpdateDomain.ALL) return true;
+    if (msg.domain === receiverDomain) {
+        if (msg.domain === UpdateDomain.EXTENSION && msg.target) {
+            return msg.target === receiverTarget;
+        }
+        return true;
+    }
+    return false;
+}
+
 function handleWebSocketMessage(msg) {
     switch (msg.type) {
         case 'ping_history':
@@ -189,8 +218,82 @@ function handleWebSocketMessage(msg) {
             // Auto-update will be handled by the client process
             break;
 
+        case 'update':
+            // Layer 0 Update Protocol message
+            handleUpdateMessage(msg.payload);
+            break;
+
         default:
             console.log('Unknown message type:', msg.type);
+    }
+}
+
+// Handle Layer 0 Update Protocol messages
+function handleUpdateMessage(updateMsg) {
+    console.log(`🔄 Layer 0 Update: domain=${updateMsg.domain} action=${updateMsg.action} commit=${updateMsg.commit?.substring(0, 8)}`);
+
+    // Check if this message is for us (UI domain)
+    if (!shouldHandleUpdate(updateMsg, UpdateDomain.UI) &&
+        !shouldHandleUpdate(updateMsg, UpdateDomain.DESKTOP)) {
+        console.log(`   → Ignoring: not for UI/Desktop domain`);
+        return;
+    }
+
+    // Log changed files
+    if (updateMsg.files && updateMsg.files.length > 0) {
+        console.log(`   → Changed files:`);
+        updateMsg.files.forEach(f => console.log(`      - ${f}`));
+    }
+
+    // Determine action based on domain and action
+    if (updateMsg.domain === UpdateDomain.UI ||
+        (updateMsg.domain === UpdateDomain.ALL && updateMsg.action === UpdateAction.RELOAD)) {
+        // UI updates: hot-reload without restart
+        console.log('🎨 Hot-reloading UI...');
+        handleUIHotReload(updateMsg);
+    } else if (updateMsg.domain === UpdateDomain.DESKTOP ||
+               updateMsg.action === UpdateAction.RESTART) {
+        // Desktop updates: need app restart
+        console.log('🔄 Desktop update requires restart');
+        showNotification(`Update available: ${updateMsg.msg || 'New version'}. Restart to apply.`, 'info');
+    }
+
+    // Show notification for all updates
+    if (updateMsg.msg) {
+        console.log(`   → Message: ${updateMsg.msg}`);
+    }
+}
+
+// Handle UI hot-reload (CSS and potentially JS)
+async function handleUIHotReload(updateMsg) {
+    // Check if only CSS files changed
+    const cssOnly = updateMsg.files && updateMsg.files.every(f =>
+        f.endsWith('.css') || f.includes('styles')
+    );
+
+    if (cssOnly) {
+        // Hot-reload CSS only
+        reloadCSS();
+        showNotification('Styles updated!', 'success');
+    } else {
+        // For JS changes, we need to reload the page
+        // But first, pull the latest from git
+        try {
+            const success = await window.vpnAPI.pullUIUpdates();
+            if (success) {
+                // Reload CSS first (instant)
+                reloadCSS();
+
+                // Then reload the page for JS changes
+                showNotification('UI updated! Reloading...', 'success');
+                setTimeout(() => {
+                    location.reload();
+                }, 1500);
+            }
+        } catch (error) {
+            console.error('Failed to pull UI updates:', error);
+            showNotification('Update failed. Try manual refresh.', 'error');
+        }
     }
 }
 
