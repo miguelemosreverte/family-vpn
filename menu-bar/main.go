@@ -635,8 +635,55 @@ func connectVPN() {
 }
 
 func handleConnectionFailure() {
-	// Safety: Ensure we're in disconnected state if connection fails
-	// This prevents internet from being broken
+	// CRITICAL: Clean up routing to restore internet access
+	log.Println("⚠️  VPN connection failed/died - running routing cleanup...")
+
+	// Get the path to fix-routing.sh script
+	exePath, err := os.Executable()
+	if err == nil {
+		appDir := filepath.Dir(exePath)
+		cleanupScript := filepath.Join(filepath.Dir(appDir), "client", "fix-routing.sh")
+
+		// If not found, try same directory
+		if _, err := os.Stat(cleanupScript); os.IsNotExist(err) {
+			cleanupScript = filepath.Join(appDir, "fix-routing.sh")
+		}
+
+		// Run cleanup script with sudo (needs password for route commands)
+		if _, err := os.Stat(cleanupScript); err == nil {
+			log.Printf("Running routing cleanup script: %s", cleanupScript)
+
+			// Get sudo password
+			password := os.Getenv("SUDO_PASSWORD")
+			if password == "" {
+				log.Println("⚠️  SUDO_PASSWORD not set - cleanup may fail")
+			}
+
+			// Run script with sudo
+			cleanupCmd := exec.Command("sudo", "-S", "bash", cleanupScript)
+
+			// Pass password to sudo via stdin
+			if password != "" {
+				stdin, err := cleanupCmd.StdinPipe()
+				if err == nil {
+					go func() {
+						defer stdin.Close()
+						io.WriteString(stdin, password+"\n")
+					}()
+				}
+			}
+
+			if output, err := cleanupCmd.CombinedOutput(); err != nil {
+				log.Printf("Cleanup script error: %v\nOutput: %s", err, string(output))
+			} else {
+				log.Printf("✓ Routing cleanup complete: %s", string(output))
+			}
+		} else {
+			log.Printf("⚠️  Cleanup script not found at %s - routing may need manual fix", cleanupScript)
+		}
+	}
+
+	// Update UI state
 	vpnState.Connected = false
 	vpnState.Process = nil
 	mStatus.SetTitle("● Disconnected")
