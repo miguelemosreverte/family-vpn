@@ -125,9 +125,9 @@ ipcMain.handle('get-disk-usage', async (event, peer) => {
         return;
       }
 
-      // Parse all physical volumes
+      // Parse all physical volumes and filter out system-reserved ones
       const lines = stdout.trim().split('\n');
-      const volumes = lines.map(line => {
+      const allVolumes = lines.map(line => {
         const parts = line.trim().split(/\s+/);
         return {
           filesystem: parts[0],
@@ -137,6 +137,25 @@ ipcMain.handle('get-disk-usage', async (event, peer) => {
           usePercent: parts[4],
           mountPoint: parts[8] || parts[5]
         };
+      });
+
+      // Filter out system-reserved volumes that users can't access
+      const systemPaths = [
+        '/System/Volumes/VM',           // Virtual memory/swap
+        '/System/Volumes/Preboot',      // Boot configuration
+        '/System/Volumes/Update',       // System updates
+        '/System/Volumes/xarts',        // System
+        '/System/Volumes/iSCPreboot',   // System boot
+        '/System/Volumes/Hardware',     // Hardware config
+      ];
+
+      const volumes = allVolumes.filter(vol => {
+        const mount = vol.mountPoint;
+        // Exclude exact matches to system paths
+        if (systemPaths.includes(mount)) return false;
+        // Exclude anything under Update/mnt
+        if (mount.includes('/Update/mnt')) return false;
+        return true;
       });
 
       // Calculate totals across all volumes
@@ -205,9 +224,9 @@ ipcMain.handle('get-volumes', async (event, peer) => {
         return;
       }
 
-      // Parse all volumes
+      // Parse all volumes and filter out system-reserved ones
       const lines = stdout.trim().split('\n').slice(1); // Skip header
-      const volumes = lines.map(line => {
+      const allVolumes = lines.map(line => {
         const parts = line.trim().split(/\s+/);
         return {
           filesystem: parts[0],
@@ -217,6 +236,23 @@ ipcMain.handle('get-volumes', async (event, peer) => {
           usePercent: parts[4],
           mountPoint: parts[8] || parts[5]
         };
+      });
+
+      // Filter out system-reserved volumes
+      const systemPaths = [
+        '/System/Volumes/VM',
+        '/System/Volumes/Preboot',
+        '/System/Volumes/Update',
+        '/System/Volumes/xarts',
+        '/System/Volumes/iSCPreboot',
+        '/System/Volumes/Hardware',
+      ];
+
+      const volumes = allVolumes.filter(vol => {
+        const mount = vol.mountPoint;
+        if (systemPaths.includes(mount)) return false;
+        if (mount.includes('/Update/mnt')) return false;
+        return true;
       });
 
       resolve({

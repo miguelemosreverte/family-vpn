@@ -176,16 +176,17 @@ function updateStats() {
 
     diskData.forEach(data => {
         if (!data.error) {
-            // Parse sizes (e.g., "108Gi" -> 108)
-            const sizeNum = parseFloat(data.size);
-            const usedNum = parseFloat(data.used);
+            // Parse sizes (e.g., "1369Gi" -> 1369)
+            const sizeNum = parseFloat(data.totalSize);
+            const usedNum = parseFloat(data.totalUsed);
             totalSize += sizeNum;
             totalUsed += usedNum;
         }
     });
 
+    const usedPercent = totalSize > 0 ? Math.round((totalUsed / totalSize) * 100) : 0;
     document.getElementById('total-disk').textContent =
-        `${Math.round(totalUsed)}Gi / ${Math.round(totalSize)}Gi used`;
+        `${Math.round(totalUsed)}Gi / ${Math.round(totalSize)}Gi (${usedPercent}%)`;
 }
 
 // Update timestamp

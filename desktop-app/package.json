@@ -12,7 +12,12 @@
     "dist": "electron-builder",
     "update": "git pull origin main && npm install"
   },
-  "keywords": ["vpn", "dashboard", "monitoring", "family"],
+  "keywords": [
+    "vpn",
+    "dashboard",
+    "monitoring",
+    "family"
+  ],
   "author": "Miguel Lemos",
   "license": "MIT",
   "build": {
@@ -21,7 +26,10 @@
     "mac": {
       "category": "public.app-category.utilities",
       "icon": "assets/icon.icns",
-      "target": ["dmg", "zip"]
+      "target": [
+        "dmg",
+        "zip"
+      ]
     },
     "dmg": {
       "title": "Family VPN Installer"
@@ -35,9 +43,9 @@
     ]
   },
   "dependencies": {
-    "electron": "^28.0.0",
     "axios": "^1.6.0",
-    "chart.js": "^4.4.0"
+    "chart.js": "^4.4.0",
+    "electron": "^28.3.3"
   },
   "devDependencies": {
     "electron-builder": "^24.9.0"
