@@ -129,58 +129,46 @@ echo ""
 echo "🔌 Building VPN Client..."
 echo "-------------------------"
 
-# Build VPN client FIRST (required by menu bar)
+# Build VPN client FIRST (required by menu bar) - always rebuild to ensure latest code
 cd client
-if [ ! -f "vpn-client" ]; then
-    echo "Building VPN client..."
-    GOTOOLCHAIN=local go build -o vpn-client . 2>/dev/null || go build -o vpn-client .
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Failed to build VPN client${NC}"
-        exit 1
-    fi
-    echo -e "${GREEN}✓ VPN client built successfully${NC}"
-else
-    echo -e "${GREEN}✓ VPN client already exists${NC}"
+echo "Building VPN client..."
+GOTOOLCHAIN=local go build -o vpn-client . 2>/dev/null || go build -o vpn-client .
+if [ $? -ne 0 ]; then
+    echo -e "${RED}❌ Failed to build VPN client${NC}"
+    exit 1
 fi
+echo -e "${GREEN}✓ VPN client built successfully${NC}"
 cd ..
 
 echo ""
 echo "🔨 Building Menu Bar App..."
 echo "----------------------------"
 
-# Build menu bar app
+# Build menu bar app - always rebuild to ensure latest code
 cd menu-bar
-if [ ! -f "family-vpn-menubar" ]; then
-    echo "Building menu bar app..."
-    go mod download 2>/dev/null || true
-    GOTOOLCHAIN=local go build -o family-vpn-menubar . 2>/dev/null || go build -o family-vpn-menubar .
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Failed to build menu bar app${NC}"
-        exit 1
-    fi
-    echo -e "${GREEN}✓ Menu bar app built successfully${NC}"
-else
-    echo -e "${GREEN}✓ Menu bar app already exists${NC}"
+echo "Building menu bar app..."
+go mod download 2>/dev/null || true
+GOTOOLCHAIN=local go build -o family-vpn-menubar . 2>/dev/null || go build -o family-vpn-menubar .
+if [ $? -ne 0 ]; then
+    echo -e "${RED}❌ Failed to build menu bar app${NC}"
+    exit 1
 fi
+echo -e "${GREEN}✓ Menu bar app built successfully${NC}"
 cd ..
 
 echo ""
 echo "🐕 Building Watchdog..."
 echo "-----------------------"
 
-# Build watchdog
+# Build watchdog - always rebuild to ensure latest code
 cd watchdog
-if [ ! -f "family-vpn-watchdog" ]; then
-    echo "Building watchdog..."
-    GOTOOLCHAIN=local go build -o family-vpn-watchdog . 2>/dev/null || go build -o family-vpn-watchdog .
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Failed to build watchdog${NC}"
-        exit 1
-    fi
-    echo -e "${GREEN}✓ Watchdog built successfully${NC}"
-else
-    echo -e "${GREEN}✓ Watchdog already exists${NC}"
+echo "Building watchdog..."
+GOTOOLCHAIN=local go build -o family-vpn-watchdog . 2>/dev/null || go build -o family-vpn-watchdog .
+if [ $? -ne 0 ]; then
+    echo -e "${RED}❌ Failed to build watchdog${NC}"
+    exit 1
 fi
+echo -e "${GREEN}✓ Watchdog built successfully${NC}"
 cd ..
 
 echo ""
