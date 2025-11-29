@@ -250,7 +250,7 @@ echo ""
 echo "🔐 Setting up configuration..."
 echo "------------------------------"
 
-# Check if .env exists
+# Check if .env exists in project
 if [ ! -f ".env" ]; then
     echo -e "${YELLOW}⚠️  .env file not found. Creating from .env.example...${NC}"
     if [ -f ".env.example" ]; then
@@ -262,6 +262,11 @@ if [ ! -f ".env" ]; then
 else
     echo -e "${GREEN}✓ .env file exists${NC}"
 fi
+
+# Install .env to /usr/local/ for menu bar app to find
+run_sudo cp ".env" "/usr/local/.env"
+run_sudo chmod 600 "/usr/local/.env"
+echo -e "${GREEN}✓ Configuration installed to /usr/local/.env${NC}"
 
 echo ""
 echo "✅ Installation Complete!"

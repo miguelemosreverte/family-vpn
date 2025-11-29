@@ -39,6 +39,7 @@
       "preload.js",
       "renderer/**/*",
       "assets/**/*",
+      "feature-flags.json",
       "package.json"
     ]
   },
