@@ -854,15 +854,12 @@ func (c *VPNClient) handleVideoCallMessage(data string) {
 
 // connectWebSocket connects to the server's WebSocket endpoint for real-time signaling
 func (c *VPNClient) connectWebSocket() {
-	// Extract server host from serverAddr
-	serverHost, _, err := net.SplitHostPort(c.serverAddr)
-	if err != nil {
-		log.Printf("[WS] Failed to parse server address: %v", err)
-		return
-	}
+	// Use the VPN gateway address (10.8.0.1) for WebSocket since we're inside the VPN tunnel
+	// Using the external IP would fail because traffic gets routed through the tunnel
+	vpnGateway := "10.8.0.1"
 
 	// Connect to WebSocket endpoint (port 9000 for HTTP/WebSocket server)
-	wsURL := fmt.Sprintf("ws://%s:9000/ws?vpn_ip=%s", serverHost, c.assignedIP)
+	wsURL := fmt.Sprintf("ws://%s:9000/ws?vpn_ip=%s", vpnGateway, c.assignedIP)
 	log.Printf("[WS] Connecting to %s", wsURL)
 
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
@@ -888,9 +885,18 @@ func (c *VPNClient) reportVersion() {
 		return
 	}
 
-	// Get current Git commit
+	// Get current Git commit from the known repo location
+	// The binary is installed at /usr/local/bin, so we need to find the actual repo
+	homeDir, err := os.UserHomeDir()
+	var repoPath string
+	if err == nil {
+		repoPath = filepath.Join(homeDir, "Desktop", "family-vpn")
+	} else {
+		repoPath = "/Users/miguel_lemos/Desktop/family-vpn" // Fallback
+	}
+
 	cmd := exec.Command("git", "rev-parse", "HEAD")
-	cmd.Dir = filepath.Dir(filepath.Dir(os.Args[0])) // Repo root
+	cmd.Dir = repoPath
 	output, err := cmd.Output()
 
 	var commit string
@@ -898,7 +904,7 @@ func (c *VPNClient) reportVersion() {
 		commit = strings.TrimSpace(string(output))
 	} else {
 		commit = "unknown"
-		log.Printf("[VERSION] Failed to get Git commit: %v", err)
+		log.Printf("[VERSION] Failed to get Git commit from %s: %v", repoPath, err)
 	}
 
 	// Get hostname
