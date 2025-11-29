@@ -144,13 +144,31 @@ func (w *Watchdog) startDesktopApp() {
 
 	log.Println("Starting desktop app...")
 
-	// Use 'open' command which properly associates with Dock icon
-	// Do NOT use direct execution as that creates a separate Dock icon
+	// Try multiple methods to launch the app properly associated with Dock
+	// Method 1: Use 'open' command (works when in proper GUI session)
 	cmd := exec.Command("open", "-a", "Family VPN")
 	if err := cmd.Run(); err != nil {
-		log.Printf("Failed to start desktop app via 'open': %v", err)
-		// Don't fallback to direct execution - it creates duplicate Dock icons
-		// The app will be started on next health check or when user clicks Dock icon
+		log.Printf("Method 1 (open -a) failed: %v", err)
+
+		// Method 2: Use osascript to tell Finder to open the app
+		// This properly associates with Dock and works from launchd context
+		osascriptCmd := exec.Command("osascript", "-e",
+			`tell application "Finder" to open application file "Family VPN.app" of folder "Applications" of startup disk`)
+		if err := osascriptCmd.Run(); err != nil {
+			log.Printf("Method 2 (osascript Finder) failed: %v", err)
+
+			// Method 3: Use osascript to activate the app directly
+			activateCmd := exec.Command("osascript", "-e",
+				`tell application "Family VPN" to activate`)
+			if err := activateCmd.Run(); err != nil {
+				log.Printf("Method 3 (osascript activate) failed: %v", err)
+				log.Println("Desktop app could not be started - user may need to click Dock icon")
+			} else {
+				log.Println("Desktop app started via osascript activate")
+			}
+		} else {
+			log.Println("Desktop app started via osascript Finder")
+		}
 	} else {
 		log.Println("Desktop app started via 'open' command")
 	}
