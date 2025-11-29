@@ -269,6 +269,27 @@ run_sudo chmod 644 "/usr/local/.env"
 echo -e "${GREEN}✓ Configuration installed to /usr/local/.env${NC}"
 
 echo ""
+echo "🚀 Configuring auto-start and Dock..."
+echo "--------------------------------------"
+
+# Add to Login Items (start on login)
+osascript -e 'tell application "System Events" to make login item at end with properties {path:"/Applications/Family VPN.app", hidden:false}' 2>/dev/null && \
+    echo -e "${GREEN}✓ Added to Login Items (starts on login)${NC}" || \
+    echo -e "${YELLOW}⚠️  Could not add to Login Items - add manually in System Preferences${NC}"
+
+# Add to Dock using dockutil or defaults
+if command -v dockutil &> /dev/null; then
+    dockutil --add "/Applications/Family VPN.app" --no-restart 2>/dev/null
+    killall Dock 2>/dev/null
+    echo -e "${GREEN}✓ Added to Dock${NC}"
+else
+    # Use defaults to add to Dock
+    defaults write com.apple.dock persistent-apps -array-add "<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>/Applications/Family VPN.app</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>" 2>/dev/null
+    killall Dock 2>/dev/null
+    echo -e "${GREEN}✓ Added to Dock${NC}"
+fi
+
+echo ""
 echo "✅ Installation Complete!"
 echo "========================="
 echo ""
