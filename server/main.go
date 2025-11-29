@@ -50,6 +50,13 @@ type PingRecord struct {
 	Success   bool   `json:"success"`   // whether ping succeeded
 }
 
+// WSClient represents a WebSocket client with its subscription
+type WSClient struct {
+	Conn         *websocket.Conn
+	Subscription *protocol.Subscription
+	VpnIP        string
+}
+
 type VPNServer struct {
 	listenAddr   string
 	encryption   bool
@@ -67,7 +74,7 @@ type VPNServer struct {
 	peerConnections map[string]net.Conn // key: VPN IP address, value: client connection
 	peerEncryption  map[string]bool     // key: VPN IP address, value: wants encryption
 	// WebSocket support for real-time signaling
-	wsClients      map[string]*websocket.Conn // key: VPN IP address, value: WebSocket connection
+	wsClients      map[string]*WSClient // key: VPN IP address, value: WebSocket client with subscription
 	wsClientsMutex sync.RWMutex
 	wsUpgrader     websocket.Upgrader
 	// Ping history tracking for health monitoring
@@ -79,6 +86,8 @@ type VPNServer struct {
 	clientVersionsMutex sync.RWMutex
 	// Server's own Git commit version
 	gitCommit string
+	// Event Bus for Layer 0 event-driven architecture
+	eventBus *protocol.EventBus
 }
 
 // getGitCommit returns the current Git commit hash for the server
@@ -97,7 +106,10 @@ func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
 	commit := getGitCommit()
 	log.Printf("[VERSION] Server running Git commit: %s", commit)
 
-	return &VPNServer{
+	// Create Event Bus with 5-minute snapshot interval
+	eb := protocol.NewEventBus(5 * time.Minute)
+
+	server := &VPNServer{
 		listenAddr:      listenAddr,
 		encryption:      encryption,
 		key:             key,
@@ -106,7 +118,7 @@ func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
 		peerConnections: make(map[string]net.Conn),
 		peerEncryption:  make(map[string]bool),
 		nextClientIP:    2, // Start from 10.8.0.2 (10.8.0.1 is server)
-		wsClients:       make(map[string]*websocket.Conn),
+		wsClients:       make(map[string]*WSClient),
 		wsUpgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true }, // Allow all origins for VPN clients
 		},
@@ -114,7 +126,54 @@ func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
 		maxPingHistory: 2880, // 24 hours at 30-second intervals
 		clientVersions: make(map[string]string),
 		gitCommit:      commit,
+		eventBus:       eb,
 	}
+
+	// Register state collectors for snapshots
+	eb.RegisterStateCollector("versions", func() interface{} {
+		server.clientVersionsMutex.RLock()
+		defer server.clientVersionsMutex.RUnlock()
+		versions := make(map[string]string)
+		for ip, commit := range server.clientVersions {
+			versions[ip] = commit
+		}
+		versions["server"] = server.gitCommit
+		return versions
+	})
+
+	eb.RegisterStateCollector("peers", func() interface{} {
+		server.peersMutex.RLock()
+		defer server.peersMutex.RUnlock()
+		peers := make([]*PeerInfo, 0, len(server.peers))
+		for _, peer := range server.peers {
+			peers = append(peers, peer)
+		}
+		return peers
+	})
+
+	eb.RegisterStateCollector("health", func() interface{} {
+		server.pingHistoryMutex.RLock()
+		defer server.pingHistoryMutex.RUnlock()
+
+		// Get last ping record for quick status
+		var lastPing *PingRecord
+		if len(server.pingHistory) > 0 {
+			lastPing = &server.pingHistory[len(server.pingHistory)-1]
+		}
+
+		return map[string]interface{}{
+			"lastPing":    lastPing,
+			"totalPings":  len(server.pingHistory),
+		}
+	})
+
+	// Subscribe to events for logging
+	eb.Subscribe("*", func(e protocol.Event) {
+		log.Printf("[EVENTBUS] %s seq=%d", e.Namespace, e.Sequence)
+	})
+
+	log.Printf("[EVENTBUS] Initialized with 5-minute snapshot interval")
+	return server
 }
 
 func minInt(a, b int) int {
@@ -341,16 +400,16 @@ func (s *VPNServer) broadcastControlMessage(command string) {
 func (s *VPNServer) sendToPeer(peerIP, command string) error {
 	// Try WebSocket first
 	s.wsClientsMutex.RLock()
-	wsConn, hasWS := s.wsClients[peerIP]
+	wsClient, hasWS := s.wsClients[peerIP]
 	s.wsClientsMutex.RUnlock()
 
-	if hasWS {
+	if hasWS && wsClient != nil && wsClient.Conn != nil {
 		// Send via WebSocket
 		message := map[string]interface{}{
 			"type": "signal",
 			"data": command,
 		}
-		if err := wsConn.WriteJSON(message); err != nil {
+		if err := wsClient.Conn.WriteJSON(message); err != nil {
 			log.Printf("[WS] Failed to send to %s via WebSocket: %v, falling back to control message", peerIP, err)
 			// Remove dead WebSocket connection
 			s.wsClientsMutex.Lock()
@@ -788,12 +847,38 @@ func (s *VPNServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Create WebSocket client with default subscription (none until they subscribe)
+	wsClient := &WSClient{
+		Conn:         conn,
+		Subscription: nil,
+		VpnIP:        vpnIP,
+	}
+
 	// Register WebSocket connection
 	s.wsClientsMutex.Lock()
-	s.wsClients[vpnIP] = conn
+	s.wsClients[vpnIP] = wsClient
 	s.wsClientsMutex.Unlock()
 
 	log.Printf("[WS] Client %s connected via WebSocket", vpnIP)
+
+	// Publish system.connect event
+	s.eventBus.Publish(protocol.NSSystemConnect, map[string]interface{}{
+		"vpn_ip": vpnIP,
+	})
+
+	// Send snapshot immediately on connect (per CLAUDE.md design)
+	// This gives new clients the full current state without requiring a request
+	snapshot := s.eventBus.GenerateSnapshot()
+	if snapshot != nil {
+		conn.WriteJSON(map[string]interface{}{
+			"type":     "snapshot",
+			"id":       snapshot.ID,
+			"ts":       snapshot.Timestamp,
+			"state":    snapshot.State,
+			"last_seq": snapshot.LastSequence,
+		})
+		log.Printf("[WS] Sent initial snapshot to client %s", vpnIP)
+	}
 
 	// Keep connection alive and handle disconnection
 	defer func() {
@@ -802,6 +887,11 @@ func (s *VPNServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		s.wsClientsMutex.Unlock()
 		conn.Close()
 		log.Printf("[WS] Client %s disconnected from WebSocket", vpnIP)
+
+		// Publish system.disconnect event
+		s.eventBus.Publish(protocol.NSSystemDisconnect, map[string]interface{}{
+			"vpn_ip": vpnIP,
+		})
 	}()
 
 	// Read and handle messages
@@ -822,6 +912,72 @@ func (s *VPNServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 
 		switch msgType {
+		case "subscribe":
+			// Handle Event Bus subscription
+			namespaces, ok := msg["namespaces"].([]interface{})
+			if !ok {
+				log.Printf("[WS] Invalid subscribe message from %s: missing namespaces", vpnIP)
+				continue
+			}
+
+			// Convert to string slice
+			patterns := make([]string, 0, len(namespaces))
+			for _, ns := range namespaces {
+				if nsStr, ok := ns.(string); ok {
+					patterns = append(patterns, nsStr)
+				}
+			}
+
+			// Update client's subscription
+			s.wsClientsMutex.Lock()
+			if client, exists := s.wsClients[vpnIP]; exists {
+				client.Subscription = &protocol.Subscription{Patterns: patterns}
+			}
+			s.wsClientsMutex.Unlock()
+
+			log.Printf("[WS] Client %s subscribed to: %v", vpnIP, patterns)
+
+			// Send confirmation
+			conn.WriteJSON(map[string]interface{}{
+				"type":    "subscribed",
+				"patterns": patterns,
+			})
+
+			// Get last_seq for replay
+			lastSeq := uint64(0)
+			if seq, ok := msg["last_seq"].(float64); ok {
+				lastSeq = uint64(seq)
+			}
+
+			// Send missed events since last_seq
+			if lastSeq > 0 {
+				events := s.eventBus.GetEventsSince(lastSeq)
+				for _, event := range events {
+					sub := &protocol.Subscription{Patterns: patterns}
+					if sub.MatchesAny(event.Namespace) {
+						s.sendEventToClient(conn, event)
+					}
+				}
+			}
+
+		case "get_snapshot":
+			// Send current snapshot
+			snapshot := s.eventBus.GenerateSnapshot()
+			if snapshot != nil {
+				response := map[string]interface{}{
+					"type":     "snapshot",
+					"id":       snapshot.ID,
+					"ts":       snapshot.Timestamp,
+					"state":    snapshot.State,
+					"last_seq": snapshot.LastSequence,
+				}
+				if err := conn.WriteJSON(response); err != nil {
+					log.Printf("[WS] Failed to send snapshot to %s: %v", vpnIP, err)
+				} else {
+					log.Printf("[WS] Sent snapshot to %s (seq=%d)", vpnIP, snapshot.LastSequence)
+				}
+			}
+
 		case "get_ping_history":
 			// Send ping history to client
 			s.pingHistoryMutex.RLock()
@@ -855,7 +1011,14 @@ func (s *VPNServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			s.clientVersions[vpnIP] = commit
 			s.clientVersionsMutex.Unlock()
 
-			log.Printf("[VERSION] Client %s (%s) reported version: %s", vpnIP, hostname, commit[:8])
+			log.Printf("[VERSION] Client %s (%s) reported version: %s", vpnIP, hostname, commit[:minInt(8, len(commit))])
+
+			// Publish version event
+			s.eventBus.Publish(protocol.NSVersionsClient, map[string]interface{}{
+				"vpn_ip":   vpnIP,
+				"hostname": hostname,
+				"commit":   commit,
+			})
 
 		case "get_client_versions":
 			// Desktop app requesting all client versions
@@ -875,7 +1038,36 @@ func (s *VPNServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			if err := conn.WriteJSON(response); err != nil {
 				log.Printf("[WS] Failed to send client versions to %s: %v", vpnIP, err)
 			} else {
-				log.Printf("[WS] Sent %d client versions (server: %s) to %s", len(versions), s.gitCommit[:8], vpnIP)
+				log.Printf("[WS] Sent %d client versions (server: %s) to %s", len(versions), s.gitCommit[:minInt(8, len(s.gitCommit))], vpnIP)
+			}
+		}
+	}
+}
+
+// sendEventToClient sends an event to a WebSocket client
+func (s *VPNServer) sendEventToClient(conn *websocket.Conn, event protocol.Event) error {
+	msg := map[string]interface{}{
+		"ns":   event.Namespace,
+		"ts":   event.Timestamp,
+		"seq":  event.Sequence,
+		"data": event.Data,
+	}
+	if event.SnapshotID != "" {
+		msg["sid"] = event.SnapshotID
+	}
+	return conn.WriteJSON(msg)
+}
+
+// broadcastEvent sends an event to all subscribed WebSocket clients
+func (s *VPNServer) broadcastEvent(event protocol.Event) {
+	s.wsClientsMutex.RLock()
+	defer s.wsClientsMutex.RUnlock()
+
+	for vpnIP, client := range s.wsClients {
+		// Check if client is subscribed to this event's namespace
+		if client.Subscription != nil && client.Subscription.MatchesAny(event.Namespace) {
+			if err := s.sendEventToClient(client.Conn, event); err != nil {
+				log.Printf("[EVENTBUS] Failed to send event to %s: %v", vpnIP, err)
 			}
 		}
 	}
@@ -1113,6 +1305,17 @@ func (s *VPNServer) monitorPingHealth() {
 
 // broadcastPingUpdate sends real-time ping updates to all WebSocket clients
 func (s *VPNServer) broadcastPingUpdate(target string, latency int, success bool) {
+	// Publish event to Event Bus
+	event := s.eventBus.Publish(protocol.NSHealthPing, map[string]interface{}{
+		"target":  target,
+		"latency": latency,
+		"success": success,
+	})
+
+	// Broadcast to subscribed WebSocket clients
+	s.broadcastEvent(event)
+
+	// Also send legacy ping_update message for backward compatibility
 	s.wsClientsMutex.RLock()
 	defer s.wsClientsMutex.RUnlock()
 
@@ -1124,9 +1327,11 @@ func (s *VPNServer) broadcastPingUpdate(target string, latency int, success bool
 		"success":   success,
 	}
 
-	for vpnIP, conn := range s.wsClients {
-		if err := conn.WriteJSON(message); err != nil {
-			log.Printf("[PING] Failed to send update to %s: %v", vpnIP, err)
+	for vpnIP, client := range s.wsClients {
+		if client != nil && client.Conn != nil {
+			if err := client.Conn.WriteJSON(message); err != nil {
+				log.Printf("[PING] Failed to send update to %s: %v", vpnIP, err)
+			}
 		}
 	}
 }
@@ -1259,20 +1464,23 @@ func (s *VPNServer) broadcastUpdateMessage(msg *protocol.UpdateMessage) {
 	successCount := 0
 	failCount := 0
 
-	for vpnIP, conn := range s.wsClients {
+	for vpnIP, client := range s.wsClients {
+		if client == nil || client.Conn == nil {
+			continue
+		}
 		// Send Layer 0 message
-		if err := conn.WriteJSON(layer0Message); err != nil {
+		if err := client.Conn.WriteJSON(layer0Message); err != nil {
 			log.Printf("[CD] Failed to send Layer 0 to %s: %v", vpnIP, err)
 			failCount++
 			continue
 		}
 
 		// Send legacy message for backward compatibility
-		if err := conn.WriteJSON(legacyMessage); err != nil {
+		if err := client.Conn.WriteJSON(legacyMessage); err != nil {
 			log.Printf("[CD] Failed to send legacy to %s: %v", vpnIP, err)
 		} else {
 			log.Printf("[CD] Notified %s (dual-mode): domain=%s action=%s commit=%s",
-				vpnIP, msg.Domain, msg.Action, msg.Commit[:8])
+				vpnIP, msg.Domain, msg.Action, msg.Commit[:minInt(8, len(msg.Commit))])
 			successCount++
 		}
 	}

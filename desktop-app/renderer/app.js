@@ -10,7 +10,7 @@ let currentDashboard = 'health';
 let pingHistory = [];
 let pingHourChart = null;
 let ping24hChart = null;
-let ws = null; // WebSocket connection to server
+let eventBus = null; // EventBus client for Layer 0 events
 let clientVersions = {}; // VPN IP -> Git commit
 let serverVersion = 'unknown'; // Server's Git commit
 
@@ -99,7 +99,7 @@ function switchDashboard(dashboard) {
     loadDashboardData();
 }
 
-// =============== WEBSOCKET CONNECTION ===============
+// =============== EVENTBUS CONNECTION ===============
 
 function connectWebSocket() {
     // Get VPN IP from server (via IPC)
@@ -107,44 +107,159 @@ function connectWebSocket() {
         const vpnIP = serverInfo.vpn_ip || '10.8.0.2'; // Default to first client IP
         const serverURL = `wss://95.217.238.72:443/ws?vpn_ip=${vpnIP}`;
 
-        console.log(`🔌 Connecting to WebSocket: ${serverURL}`);
+        console.log(`🔌 Connecting to EventBus: ${serverURL}`);
 
-        ws = new WebSocket(serverURL);
+        // Create EventBus client with subscriptions to all events
+        const { NS, SUB, createEventBus } = window.EventBus;
 
-        ws.onopen = () => {
-            console.log('✅ WebSocket connected');
-            updateWebSocketStatus(true);
+        eventBus = createEventBus({
+            url: serverURL,
+            subscriptions: SUB.ALL, // Subscribe to all events
+            autoReconnect: true,
+            reconnectDelay: 1000,
+            maxReconnectDelay: 30000,
+            onConnect: () => {
+                console.log('✅ EventBus connected');
+                updateWebSocketStatus(true);
+                // Server sends snapshot automatically on connect (per CLAUDE.md design)
+                // No explicit request needed - just wait for onSnapshot callback
+            },
+            onDisconnect: () => {
+                console.log('🔌 EventBus disconnected');
+                updateWebSocketStatus(false);
+            },
+            onSnapshot: (snapshot) => {
+                console.log('📸 Received snapshot:', snapshot.id);
 
-            // Request ping history immediately
-            ws.send(JSON.stringify({ type: 'get_ping_history' }));
-        };
-
-        ws.onmessage = (event) => {
-            try {
-                const msg = JSON.parse(event.data);
-                handleWebSocketMessage(msg);
-            } catch (error) {
-                console.error('Failed to parse WebSocket message:', error);
+                // Update state from snapshot
+                if (snapshot.has('versions')) {
+                    clientVersions = snapshot.get('versions') || {};
+                    if (currentDashboard === 'versions') {
+                        renderVersionsDashboardFromWebSocket();
+                    }
+                }
+                if (snapshot.has('health')) {
+                    const healthState = snapshot.get('health');
+                    if (healthState && healthState.pingHistory) {
+                        pingHistory = healthState.pingHistory;
+                        if (currentDashboard === 'health') {
+                            renderHealthCharts();
+                            renderPingHistoryTable();
+                            renderHealthMetrics();
+                        }
+                    }
+                }
+            },
+            onError: (error) => {
+                console.error('❌ EventBus error:', error);
+                updateWebSocketStatus(false);
             }
-        };
+        });
 
-        ws.onerror = (error) => {
-            console.error('❌ WebSocket error:', error);
-            updateWebSocketStatus(false);
-        };
+        // Subscribe to health events
+        eventBus.subscribe('health.*', handleHealthEvent);
 
-        ws.onclose = () => {
-            console.log('🔌 WebSocket disconnected, reconnecting in 5s...');
-            updateWebSocketStatus(false);
+        // Subscribe to version events
+        eventBus.subscribe('versions.*', handleVersionEvent);
 
-            // Reconnect after 5 seconds
-            setTimeout(connectWebSocket, 5000);
-        };
+        // Subscribe to update events
+        eventBus.subscribe('updates.*', handleUpdateEvent);
+
+        // Subscribe to system events
+        eventBus.subscribe('system.*', handleSystemEvent);
+
+        // Subscribe to peer events
+        eventBus.subscribe('peers.*', handlePeerEvent);
+
+        // Connect
+        eventBus.connect();
+
     }).catch(error => {
         console.error('Failed to get server info:', error);
         // Retry connection in 5 seconds
         setTimeout(connectWebSocket, 5000);
     });
+}
+
+// =============== EVENT HANDLERS ===============
+
+function handleHealthEvent(event) {
+    const { NS } = window.EventBus;
+
+    if (event.ns === NS.HEALTH_PING || event.ns === 'health.ping') {
+        // Real-time ping update
+        const newPing = {
+            timestamp: event.ts,
+            target: event.data.target,
+            latency: event.data.latency,
+            success: event.data.success !== false
+        };
+
+        pingHistory.push(newPing);
+
+        // Keep only last 2880 records (24 hours)
+        if (pingHistory.length > 2880) {
+            pingHistory = pingHistory.slice(-2880);
+        }
+
+        // Update UI if on health dashboard
+        if (currentDashboard === 'health') {
+            renderHealthCharts();
+            renderPingHistoryTable();
+            renderHealthMetrics();
+        }
+    }
+}
+
+function handleVersionEvent(event) {
+    const { NS } = window.EventBus;
+
+    console.log(`📦 Version event: ${event.ns}`, event.data);
+
+    if (event.data.vpn_ip && event.data.commit) {
+        clientVersions[event.data.vpn_ip] = event.data.commit;
+    }
+    if (event.data.server_version) {
+        serverVersion = event.data.server_version;
+    }
+    if (event.data.versions) {
+        clientVersions = event.data.versions;
+    }
+
+    // Re-render versions dashboard if we're on it
+    if (currentDashboard === 'versions') {
+        renderVersionsDashboardFromWebSocket();
+    }
+}
+
+function handleUpdateEvent(event) {
+    console.log('🔄 Update event:', event.ns, event.data);
+
+    // Handle Layer 0 Update Protocol message
+    if (event.data) {
+        handleUpdateMessage(event.data);
+    }
+}
+
+function handleSystemEvent(event) {
+    const { NS } = window.EventBus;
+
+    console.log(`🔧 System event: ${event.ns}`, event.data);
+
+    if (event.ns === 'system.connect' || event.ns === NS.SYSTEM_CONNECT) {
+        // A client connected
+        showNotification(`Client connected: ${event.data.vpn_ip || 'unknown'}`, 'info');
+    } else if (event.ns === 'system.disconnect' || event.ns === NS.SYSTEM_DISCONNECT) {
+        // A client disconnected
+        showNotification(`Client disconnected: ${event.data.vpn_ip || 'unknown'}`, 'info');
+    }
+}
+
+function handlePeerEvent(event) {
+    console.log(`👥 Peer event: ${event.ns}`, event.data);
+
+    // Refresh peer list
+    loadDashboardData();
 }
 
 // Layer 0 Update Protocol - Domain definitions
@@ -381,17 +496,17 @@ async function loadVolumesData() {
 
 async function loadVersionsData() {
     try {
-        // Request client versions via WebSocket
-        if (ws && ws.readyState === WebSocket.OPEN) {
+        // Request client versions via EventBus
+        if (eventBus && eventBus.connected) {
             console.log('📦 Requesting client versions from server...');
-            ws.send(JSON.stringify({ type: 'get_client_versions' }));
+            eventBus.send('get_client_versions');
         }
 
         // Also get local Git commit for comparison
         const localInfo = await getVersionInfo();
         serverVersion = localInfo.server; // Use local git as server reference
 
-        // Render with whatever data we have (will be updated when WebSocket responds)
+        // Render with whatever data we have (will be updated when EventBus responds)
         renderVersionsDashboardFromWebSocket();
     } catch (error) {
         console.error('Failed to load versions data:', error);
