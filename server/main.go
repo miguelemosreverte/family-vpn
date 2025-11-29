@@ -1218,25 +1218,41 @@ func getChangedFiles(oldCommit, newCommit string) []string {
 }
 
 // broadcastUpdateMessage sends a Layer 0 UpdateMessage to all connected WebSocket clients
+// Also sends legacy update_available message for backward compatibility
 func (s *VPNServer) broadcastUpdateMessage(msg *protocol.UpdateMessage) {
 	s.wsClientsMutex.RLock()
 	defer s.wsClientsMutex.RUnlock()
 
-	// Create message envelope for WebSocket
-	message := map[string]interface{}{
+	// Layer 0 protocol message (new clients)
+	layer0Message := map[string]interface{}{
 		"type":    "update",
 		"payload": msg,
+	}
+
+	// Legacy message (old clients)
+	legacyMessage := map[string]interface{}{
+		"type":    "update_available",
+		"version": msg.Commit,
+		"domain":  msg.Domain,
+		"action":  msg.Action,
 	}
 
 	successCount := 0
 	failCount := 0
 
 	for vpnIP, conn := range s.wsClients {
-		if err := conn.WriteJSON(message); err != nil {
-			log.Printf("[CD] Failed to notify %s: %v", vpnIP, err)
+		// Send Layer 0 message
+		if err := conn.WriteJSON(layer0Message); err != nil {
+			log.Printf("[CD] Failed to send Layer 0 to %s: %v", vpnIP, err)
 			failCount++
+			continue
+		}
+
+		// Send legacy message for backward compatibility
+		if err := conn.WriteJSON(legacyMessage); err != nil {
+			log.Printf("[CD] Failed to send legacy to %s: %v", vpnIP, err)
 		} else {
-			log.Printf("[CD] Notified %s: domain=%s action=%s commit=%s",
+			log.Printf("[CD] Notified %s (dual-mode): domain=%s action=%s commit=%s",
 				vpnIP, msg.Domain, msg.Action, msg.Commit[:8])
 			successCount++
 		}
