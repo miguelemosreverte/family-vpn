@@ -574,6 +574,240 @@ netstat -rn | grep default
 
 ---
 
+## 🖥️ Desktop Dashboard & Auto-Update System
+
+### Desktop App Features
+
+The Family VPN now includes an **Electron desktop dashboard** with:
+
+- 📊 **Real-time Monitoring** - View all connected VPN clients
+- 💾 **Disk Usage** - Monitor disk space across all peers
+- 🖥️ **Multi-Volume Support** - Track multiple physical drives per client
+- 🔗 **SSH Integration** - Direct SSH access to VPN peers
+- 🎨 **Dark/Light Mode** - WSJ-inspired newspaper theme
+- 🔄 **Auto-Update** - Hot-reload UI from Git **without restart**
+- ⚙️ **Feature Flags** - Enable/disable features remotely
+
+### Installation & Setup
+
+```bash
+# One-command installation
+./install.sh
+```
+
+This script:
+1. Checks dependencies (Go, Node.js, ImageMagick)
+2. Builds menu bar app (Go)
+3. Builds desktop app (Electron)
+4. Generates app icon
+5. Installs both to Applications folder
+6. Sets up crash recovery scripts
+
+### Running the Apps
+
+```bash
+# Open desktop app (auto-launches menu bar too)
+open "/Applications/Family VPN.app"
+
+# Or run menu bar app only
+/usr/local/bin/family-vpn-menubar
+```
+
+**Integration:** Menu bar and desktop apps are **linked** - closing one closes the other.
+
+### Feature Flags System
+
+Feature flags are controlled via `desktop-app/feature-flags.json`:
+
+```json
+{
+  "version": "1.0.0",
+  "features": {
+    "darkMode": {
+      "enabled": true,
+      "description": "Enable dark/light mode toggle"
+    },
+    "autoUpdate": {
+      "enabled": true,
+      "description": "Auto-update UI from Git without restart",
+      "checkIntervalMinutes": 5
+    },
+    "ssh_integration": {
+      "enabled": true,
+      "description": "SSH access to VPN peers"
+    }
+  },
+  "ui": {
+    "refreshInterval": 3000,
+    "animationsEnabled": true
+  }
+}
+```
+
+**How it works:**
+
+1. Edit `feature-flags.json` on **any machine**
+2. Commit and push to Git
+3. **All other machines auto-pull** within 5 minutes
+4. **UI updates automatically** without restart
+
+**Example:** Disable dark mode across all clients:
+
+```bash
+# Edit feature-flags.json
+{
+  "features": {
+    "darkMode": { "enabled": false }
+  }
+}
+
+# Commit and push
+git add desktop-app/feature-flags.json
+git commit -m "Disable dark mode"
+git push origin main
+
+# All clients will pull and apply within 5 minutes!
+```
+
+### Auto-Update System
+
+The desktop app has **two update modes**:
+
+#### 1. Hot-Reload (No Restart Needed)
+
+For UI changes (HTML, CSS, JS, feature flags):
+
+- Checks Git every **5 minutes** (configurable)
+- Detects changes to `desktop-app/renderer/` or `feature-flags.json`
+- **Automatically pulls** from Git
+- **Reloads CSS** without full page reload
+- Shows success notification
+
+**Just push to Git, and all clients update automatically!**
+
+```bash
+# Edit UI files
+nano desktop-app/renderer/styles.css
+
+# Commit and push
+git add desktop-app/renderer/styles.css
+git commit -m "Update UI colors"
+git push origin main
+
+# Within 5 minutes:
+# ✅ All clients pull changes
+# ✅ CSS reloads automatically
+# ✅ No restart needed!
+```
+
+#### 2. Full Reinstall (Cmd+Shift+U)
+
+For code changes (Go, Electron main process, dependencies):
+
+Press **`Cmd+Shift+U`** in the desktop app to:
+
+1. Pull latest from Git
+2. Rebuild menu bar app (Go)
+3. Rebuild desktop app (Electron)
+4. Reinstall both apps
+5. Auto-restart
+
+**This is a hidden feature** - useful for updating existing installations remotely.
+
+### Crash Recovery
+
+**CRITICAL FIX:** If VPN client crashes or is force-killed, the system no longer loses internet access.
+
+**How it works:**
+
+1. Menu bar app detects VPN client death
+2. Automatically runs `fix-routing.sh`
+3. Restores internet via multiple fallback methods:
+   - Check existing routes for gateway
+   - Query DHCP for router IP
+   - Ping common router IPs (192.168.0.1, etc.)
+   - Restart Wi-Fi as last resort
+
+**No manual intervention needed!**
+
+### Updating Existing Installations
+
+#### Method 1: Auto-Update (Recommended)
+
+**For UI changes** (HTML, CSS, JS, feature flags):
+
+```bash
+git add desktop-app/renderer/
+git commit -m "Update feature"
+git push origin main
+```
+
+✅ All clients auto-pull within 5 minutes
+✅ No restart needed
+
+**For code changes** (Go, Electron main):
+
+Users press `Cmd+Shift+U` to trigger reinstall.
+
+#### Method 2: Manual Reinstall
+
+On each machine:
+
+```bash
+cd family-vpn
+git pull origin main
+./install.sh
+```
+
+### Development
+
+Run in dev mode with DevTools:
+
+```bash
+# Desktop app (with DevTools)
+cd desktop-app
+npm start -- --dev
+
+# Menu bar (10 second timeout)
+cd menu-bar
+go run main.go
+```
+
+### Architecture
+
+```
+family-vpn/
+├── client/              # VPN client (Go)
+│   ├── main.go
+│   ├── fix-routing.sh   # Crash recovery
+│   └── vpn-watchdog.sh
+├── server/              # VPN server (Go)
+├── menu-bar/            # Menu bar app (Go + systray)
+│   └── main.go
+├── desktop-app/         # Electron dashboard
+│   ├── main.js          # Main process
+│   ├── preload.js       # IPC bridge
+│   ├── renderer/        # UI (hot-reloadable)
+│   │   ├── index.html
+│   │   ├── app.js
+│   │   └── styles.css
+│   ├── feature-flags.json
+│   └── assets/
+│       └── icon.icns
+├── extensions/          # Plugin system
+│   ├── video/
+│   └── ssh/
+└── install.sh           # One-command install
+```
+
+### Logs
+
+- **Menu bar**: `/tmp/menubar.log`, `/tmp/menubar-debug.log`
+- **Desktop app**: Open DevTools (`Cmd+Opt+I`)
+- **VPN client**: Logged via menu bar
+
+---
+
 ## 🙋 Support
 
 If you encounter issues:
@@ -582,3 +816,4 @@ If you encounter issues:
 2. Run `./test-doctor.sh` to diagnose
 3. Check server logs: `ssh root@95.217.238.72 "tail -100 /var/log/vpn-server.log"`
 4. Review recent commits: `git log --oneline -10`
+5. For desktop app issues: Open DevTools (`Cmd+Opt+I`) and check console

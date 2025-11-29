@@ -3,10 +3,14 @@
 let peers = [];
 let diskData = [];
 let volumeData = [];
+let featureFlags = {};
 
 // Initialize app
 async function init() {
     console.log('🚀 Family VPN Dashboard starting...');
+
+    // Load feature flags
+    await loadFeatureFlags();
 
     // Load saved theme
     const savedTheme = localStorage.getItem('theme');
@@ -17,6 +21,152 @@ async function init() {
     await loadData(true); // Show loading on initial load
     setupEventListeners();
     startAutoRefresh();
+
+    // Start hot-reload watcher if enabled
+    if (featureFlags.features?.autoUpdate?.enabled) {
+        startHotReload();
+    }
+
+    // Add hidden update button listener
+    setupUpdateHotkey();
+}
+
+// Load feature flags from Git-tracked JSON file
+async function loadFeatureFlags() {
+    try {
+        featureFlags = await window.vpnAPI.getFeatureFlags();
+        console.log('✅ Feature flags loaded:', featureFlags);
+
+        // Apply feature flags to UI
+        applyFeatureFlags();
+    } catch (error) {
+        console.warn('⚠️  Failed to load feature flags, using defaults:', error);
+        featureFlags = {
+            version: '1.0.0',
+            features: {
+                autoUpdate: { enabled: true, checkIntervalMinutes: 5 }
+            }
+        };
+    }
+}
+
+// Apply feature flags to UI
+function applyFeatureFlags() {
+    const flags = featureFlags.features || {};
+
+    // Example: Hide/show features based on flags
+    if (!flags.darkMode?.enabled) {
+        const themeToggle = document.getElementById('theme-toggle');
+        if (themeToggle) themeToggle.style.display = 'none';
+    }
+
+    // Apply UI settings
+    if (featureFlags.ui?.refreshInterval) {
+        console.log(`🔧 Setting refresh interval to ${featureFlags.ui.refreshInterval}ms`);
+    }
+}
+
+// Hot-reload: Check Git for UI updates without restarting app
+function startHotReload() {
+    const checkInterval = (featureFlags.features?.autoUpdate?.checkIntervalMinutes || 5) * 60 * 1000;
+
+    console.log(`🔥 Hot-reload enabled (checking every ${checkInterval/60000} minutes)`);
+
+    setInterval(async () => {
+        try {
+            const hasUpdates = await window.vpnAPI.checkForUIUpdates();
+
+            if (hasUpdates) {
+                console.log('🔄 UI updates detected, pulling from Git...');
+                const success = await window.vpnAPI.pullUIUpdates();
+
+                if (success) {
+                    console.log('✅ UI updated from Git, reloading...');
+
+                    // Reload feature flags
+                    await loadFeatureFlags();
+
+                    // Reload CSS without full page reload
+                    reloadCSS();
+
+                    // Show notification
+                    showNotification('UI updated from Git!', 'success');
+                }
+            }
+        } catch (error) {
+            console.error('❌ Hot-reload check failed:', error);
+        }
+    }, checkInterval);
+}
+
+// Reload CSS files without full page reload
+function reloadCSS() {
+    const links = document.querySelectorAll('link[rel="stylesheet"]');
+    links.forEach(link => {
+        const href = link.getAttribute('href').split('?')[0];
+        link.setAttribute('href', href + '?reload=' + new Date().getTime());
+    });
+    console.log('🎨 CSS reloaded');
+}
+
+// Setup hidden update hotkey (Cmd+Shift+U)
+function setupUpdateHotkey() {
+    document.addEventListener('keydown', async (e) => {
+        // Cmd+Shift+U on macOS (or Ctrl+Shift+U on other platforms)
+        if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'U') {
+            e.preventDefault();
+            console.log('🔧 Update/Reinstall triggered by hotkey');
+
+            const confirmed = confirm('Update/Reinstall Family VPN?\n\nThis will:\n1. Pull latest changes from Git\n2. Rebuild and reinstall both apps\n3. Restart the application\n\nContinue?');
+
+            if (confirmed) {
+                showNotification('Starting update/reinstall...', 'info');
+
+                try {
+                    await window.vpnAPI.triggerReinstall();
+                } catch (error) {
+                    console.error('❌ Reinstall failed:', error);
+                    showNotification('Update failed: ' + error.message, 'error');
+                }
+            }
+        }
+    });
+
+    console.log('⌨️  Hidden update hotkey registered (Cmd+Shift+U)');
+}
+
+// Show notification banner
+function showNotification(message, type = 'info') {
+    const banner = document.createElement('div');
+    banner.className = `notification notification-${type}`;
+    banner.innerHTML = `
+        <span>${message}</span>
+        <button onclick="this.parentElement.remove()">✕</button>
+    `;
+    banner.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 15px 20px;
+        background: ${type === 'success' ? '#4caf50' : type === 'error' ? '#f44336' : '#2196f3'};
+        color: white;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        z-index: 10000;
+        animation: slideIn 0.3s ease-out;
+        display: flex;
+        align-items: center;
+        gap: 15px;
+    `;
+
+    document.body.appendChild(banner);
+
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+        banner.style.opacity = '0';
+        banner.style.transition = 'opacity 0.3s';
+        setTimeout(() => banner.remove(), 300);
+    }, 5000);
 }
 
 // Load all data

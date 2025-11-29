@@ -1,0 +1,31 @@
+{
+  "version": "1.0.0",
+  "features": {
+    "darkMode": {
+      "enabled": true,
+      "description": "Enable dark/light mode toggle"
+    },
+    "autoUpdate": {
+      "enabled": true,
+      "description": "Auto-update UI from Git without restart",
+      "checkIntervalMinutes": 5
+    },
+    "wsj_theme": {
+      "enabled": true,
+      "description": "Wall Street Journal inspired UI theme"
+    },
+    "ssh_integration": {
+      "enabled": true,
+      "description": "SSH access to VPN peers"
+    },
+    "performance_stats": {
+      "enabled": true,
+      "description": "Show real-time VPN performance metrics"
+    }
+  },
+  "ui": {
+    "refreshInterval": 3000,
+    "animationsEnabled": true,
+    "compactMode": false
+  }
+}
