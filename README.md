@@ -22,6 +22,50 @@ Secure, encrypted VPN built from scratch with AES-256-GCM encryption.
 
 ## 🚀 Quick Start (New Computer)
 
+### Automated Installation (Recommended)
+
+The fastest way to get started is with the automated installation script:
+
+```bash
+# 1. Clone the repository
+git clone git@github.com:miguelemosreverte/family-vpn.git
+cd family-vpn
+
+# 2. Install dependencies (macOS)
+brew install go node imagemagick gh
+
+# 3. Retrieve secrets from GitHub Gist
+gh auth login  # Authenticate with GitHub
+gh gist clone b523442d7bec467dbba22a21feab027e
+cp b523442d7bec467dbba22a21feab027e/.env .
+rm -rf b523442d7bec467dbba22a21feab027e
+
+# 4. Run automated installation (builds and installs everything)
+./install.sh
+```
+
+This single script will:
+- ✅ Build the VPN client (Go)
+- ✅ Build the menu bar app (Go)
+- ✅ Build the desktop app (Electron)
+- ✅ Generate app icon
+- ✅ Install both apps to `/Applications/`
+- ✅ Set up crash recovery scripts
+
+**After installation:**
+- Open "Family VPN" from Applications folder (appears in dock)
+- Menu bar icon appears automatically at top-right
+- Click menu bar icon to connect/disconnect VPN
+
+---
+
+### Manual Installation (Advanced)
+
+If you prefer to build components separately or the automated script doesn't work:
+
+<details>
+<summary>Click to expand manual installation steps</summary>
+
 ### 1. Clone the Repository
 
 ```bash
@@ -95,6 +139,8 @@ You should see:
 ✓ DNS configured: 1.1.1.1 (Cloudflare), 8.8.8.8 (Google) through VPN
 ✓ All traffic now routed through VPN
 ```
+
+</details>
 
 ---
 
