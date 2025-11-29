@@ -292,6 +292,18 @@ function getUsernameForPeer(peer) {
   return 'miguel_lemos';
 }
 
+// Watch for menu bar app - quit desktop if menu bar quits
+function watchMenuBarApp() {
+  setInterval(() => {
+    exec('pgrep -f family-vpn-menubar', (err, stdout) => {
+      if (err || !stdout.trim()) {
+        console.log('Menu bar app not running, quitting desktop app...');
+        app.quit();
+      }
+    });
+  }, 2000); // Check every 2 seconds
+}
+
 app.whenReady().then(() => {
   createWindow();
 
@@ -299,6 +311,9 @@ app.whenReady().then(() => {
   if (!devMode) {
     setInterval(checkForUpdates, 5 * 60 * 1000);
   }
+
+  // Watch menu bar app
+  watchMenuBarApp();
 });
 
 app.on('window-all-closed', () => {

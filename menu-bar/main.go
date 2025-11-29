@@ -440,6 +440,9 @@ func onReady() {
 	// Launch desktop app on startup
 	go launchDesktopApp()
 
+	// Watch desktop app - quit menu bar if desktop quits
+	go watchDesktopApp()
+
 	// Auto-connect on startup (unless in dev mode)
 	if !devMode {
 		go func() {
@@ -1154,6 +1157,22 @@ func launchDesktopApp() {
 		log.Printf("Failed to launch desktop app: %v", err)
 	} else {
 		log.Printf("✓ Desktop dashboard app launched")
+	}
+}
+
+// watchDesktopApp monitors the desktop app and quits menu bar if it quits
+func watchDesktopApp() {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		// Check if desktop app is running
+		checkCmd := exec.Command("pgrep", "-f", "Family VPN.app")
+		if output, err := checkCmd.Output(); err != nil || len(output) == 0 {
+			log.Printf("Desktop app quit, shutting down menu bar...")
+			systray.Quit()
+			os.Exit(0)
+		}
 	}
 }
 
