@@ -69,21 +69,41 @@ else
 fi
 
 echo ""
+echo "🔌 Building VPN Client..."
+echo "-------------------------"
+
+# Build VPN client FIRST (required by menu bar)
+cd client
+if [ ! -f "vpn-client" ]; then
+    echo "Building VPN client..."
+    GOTOOLCHAIN=local go build -o vpn-client main.go 2>/dev/null || go build -o vpn-client main.go
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}❌ Failed to build VPN client${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✓ VPN client built successfully${NC}"
+else
+    echo -e "${GREEN}✓ VPN client already exists${NC}"
+fi
+cd ..
+
+echo ""
 echo "🔨 Building Menu Bar App..."
 echo "----------------------------"
 
-# Build menu bar app (skip if binary already exists and is recent)
+# Build menu bar app
 cd menu-bar
-if [ -f "family-vpn-menubar" ]; then
-    echo -e "${GREEN}✓ Menu bar app already exists, skipping build${NC}"
-else
-    go mod download
-    GOTOOLCHAIN=local go build -o family-vpn-menubar 2>/dev/null || go build -o family-vpn-menubar
+if [ ! -f "family-vpn-menubar" ]; then
+    echo "Building menu bar app..."
+    go mod download 2>/dev/null || true
+    GOTOOLCHAIN=local go build -o family-vpn-menubar main.go extension_manager.go 2>/dev/null || go build -o family-vpn-menubar main.go extension_manager.go
     if [ $? -ne 0 ]; then
         echo -e "${RED}❌ Failed to build menu bar app${NC}"
         exit 1
     fi
     echo -e "${GREEN}✓ Menu bar app built successfully${NC}"
+else
+    echo -e "${GREEN}✓ Menu bar app already exists${NC}"
 fi
 cd ..
 
@@ -105,7 +125,7 @@ if [ ! -f "icon.icns" ]; then
             -fill white \
             -draw "circle 512,572 512,542" \
             family-vpn-icon.png
-        echo -e "${GREEN}✓ Icon generated${NC}"
+        echo -e "${GREEN}✓ Icon PNG generated${NC}"
     else
         echo -e "${YELLOW}✓ PNG icon already exists${NC}"
     fi
@@ -121,7 +141,7 @@ if [ ! -f "icon.icns" ]; then
 
     # Build .icns
     iconutil -c icns icon.iconset -o icon.icns
-    echo -e "${GREEN}✓ Icon assets generated${NC}"
+    echo -e "${GREEN}✓ Icon.icns generated${NC}"
 else
     echo -e "${GREEN}✓ Icon.icns already exists, skipping generation${NC}"
 fi
@@ -161,10 +181,10 @@ echo "-----------------------------"
 DESKTOP_APP_PATH="/Applications/Family VPN.app"
 if [ -d "$DESKTOP_APP_PATH" ]; then
     echo -e "${YELLOW}⚠️  Removing existing desktop app...${NC}"
-    rm -rf "$DESKTOP_APP_PATH"
+    sudo rm -rf "$DESKTOP_APP_PATH"
 fi
 
-cp -R "desktop-app/dist/mac-arm64/Family VPN.app" "/Applications/"
+sudo cp -R "desktop-app/dist/mac-arm64/Family VPN.app" "/Applications/"
 echo -e "${GREEN}✓ Desktop app installed to /Applications/${NC}"
 
 # Install menu bar app
@@ -178,6 +198,17 @@ sudo cp "menu-bar/family-vpn-menubar" "/usr/local/bin/"
 sudo chmod +x "/usr/local/bin/family-vpn-menubar"
 echo -e "${GREEN}✓ Menu bar app installed to /usr/local/bin/${NC}"
 
+# Install VPN client
+VPN_CLIENT_PATH="/usr/local/bin/family-vpn-client"
+if [ -f "$VPN_CLIENT_PATH" ]; then
+    echo -e "${YELLOW}⚠️  Removing existing VPN client...${NC}"
+    sudo rm -f "$VPN_CLIENT_PATH"
+fi
+
+sudo cp "client/vpn-client" "/usr/local/bin/family-vpn-client"
+sudo chmod +x "/usr/local/bin/family-vpn-client"
+echo -e "${GREEN}✓ VPN client installed to /usr/local/bin/${NC}"
+
 # Install routing fix script
 ROUTING_SCRIPT="/usr/local/bin/family-vpn-fix-routing"
 sudo cp "client/fix-routing.sh" "$ROUTING_SCRIPT"
@@ -185,8 +216,8 @@ sudo chmod +x "$ROUTING_SCRIPT"
 echo -e "${GREEN}✓ Routing fix script installed${NC}"
 
 echo ""
-echo "🔐 Setting up permissions..."
-echo "----------------------------"
+echo "🔐 Setting up configuration..."
+echo "------------------------------"
 
 # Check if .env exists
 if [ ! -f ".env" ]; then
@@ -197,6 +228,8 @@ if [ ! -f ".env" ]; then
     else
         echo -e "${RED}❌ .env.example not found${NC}"
     fi
+else
+    echo -e "${GREEN}✓ .env file exists${NC}"
 fi
 
 echo ""
@@ -205,7 +238,8 @@ echo "========================="
 echo ""
 echo "To run Family VPN:"
 echo "  1. Open 'Family VPN' from Applications folder"
-echo "  2. The menu bar icon will appear automatically at the top-right"
+echo "  2. The menu bar icon will appear automatically"
+echo "  3. Or run from terminal: cd $(pwd)/menu-bar && ./family-vpn-menubar"
 echo ""
 echo "To update existing installation:"
 echo "  - Run this script again: ./install.sh"
