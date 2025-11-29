@@ -12,6 +12,8 @@
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
     <key>StandardOutPath</key>
     <string>/tmp/family-vpn-watchdog.log</string>
     <key>StandardErrorPath</key>

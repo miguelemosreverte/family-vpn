@@ -5,6 +5,14 @@
 
 set -e
 
+# Set up PATH for non-interactive SSH sessions (Homebrew on macOS)
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    # Add Homebrew paths for both Intel and Apple Silicon
+    export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+    # Also check common node/npm locations
+    export PATH="$HOME/.nvm/versions/node/*/bin:$PATH" 2>/dev/null || true
+fi
+
 echo "🚀 Family VPN Installation Script"
 echo "=================================="
 echo ""

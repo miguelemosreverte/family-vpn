@@ -6,6 +6,12 @@
 # any VPN components to prevent leaving the machine without internet.
 # Fully automated - reads sudo password from .env file
 
+# Set up PATH for non-interactive SSH sessions (Homebrew on macOS)
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    # Add Homebrew paths for both Intel and Apple Silicon
+    export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+fi
+
 echo "🗑️  Family VPN Uninstall Script"
 echo "================================"
 echo ""
@@ -185,48 +191,37 @@ echo ""
 echo "🧹 Cleaning build artifacts..."
 echo "------------------------------"
 
-# Remove built binaries (optional - for fresh build)
-if [ "$1" == "--clean" ] || [ "$1" == "-c" ]; then
-    echo "Cleaning build artifacts..."
-
-    # Remove VPN client binary
-    if [ -f "$SCRIPT_DIR/client/vpn-client" ]; then
-        rm -f "$SCRIPT_DIR/client/vpn-client"
-        echo -e "${GREEN}✓ Removed client/vpn-client${NC}"
-    fi
-
-    # Remove menu bar binary
-    if [ -f "$SCRIPT_DIR/menu-bar/family-vpn-menubar" ]; then
-        rm -f "$SCRIPT_DIR/menu-bar/family-vpn-menubar"
-        echo -e "${GREEN}✓ Removed menu-bar/family-vpn-menubar${NC}"
-    fi
-
-    # Remove desktop app build
-    if [ -d "$SCRIPT_DIR/desktop-app/dist" ]; then
-        rm -rf "$SCRIPT_DIR/desktop-app/dist"
-        echo -e "${GREEN}✓ Removed desktop-app/dist/${NC}"
-    fi
-
-    # Remove node_modules (optional, takes long to reinstall)
-    if [ "$1" == "--clean-all" ]; then
-        if [ -d "$SCRIPT_DIR/desktop-app/node_modules" ]; then
-            rm -rf "$SCRIPT_DIR/desktop-app/node_modules"
-            echo -e "${GREEN}✓ Removed desktop-app/node_modules/${NC}"
-        fi
-    fi
-
-    echo -e "${GREEN}✓ Build artifacts cleaned${NC}"
-else
-    echo -e "${YELLOW}• Keeping build artifacts (use --clean to remove)${NC}"
+# Always clean build artifacts for a fresh reinstall
+# Remove VPN client binary
+if [ -f "$SCRIPT_DIR/client/vpn-client" ]; then
+    rm -f "$SCRIPT_DIR/client/vpn-client"
+    echo -e "${GREEN}✓ Removed client/vpn-client${NC}"
 fi
+
+# Remove menu bar binary
+if [ -f "$SCRIPT_DIR/menu-bar/family-vpn-menubar" ]; then
+    rm -f "$SCRIPT_DIR/menu-bar/family-vpn-menubar"
+    echo -e "${GREEN}✓ Removed menu-bar/family-vpn-menubar${NC}"
+fi
+
+# Remove watchdog binary
+if [ -f "$SCRIPT_DIR/watchdog/family-vpn-watchdog" ]; then
+    rm -f "$SCRIPT_DIR/watchdog/family-vpn-watchdog"
+    echo -e "${GREEN}✓ Removed watchdog/family-vpn-watchdog${NC}"
+fi
+
+# Remove desktop app build
+if [ -d "$SCRIPT_DIR/desktop-app/dist" ]; then
+    rm -rf "$SCRIPT_DIR/desktop-app/dist"
+    echo -e "${GREEN}✓ Removed desktop-app/dist/${NC}"
+fi
+
+echo -e "${GREEN}✓ Build artifacts cleaned${NC}"
 
 echo ""
 echo "✅ Uninstall Complete!"
 echo "======================"
 echo ""
-echo "To reinstall:"
+echo "To reinstall, run:"
 echo "  ./install.sh"
-echo ""
-echo "To clean build artifacts and reinstall fresh:"
-echo "  ./uninstall.sh --clean && ./install.sh"
 echo ""
