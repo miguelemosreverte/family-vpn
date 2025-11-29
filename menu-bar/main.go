@@ -1218,17 +1218,27 @@ func watchDesktopApp() {
 
 	log.Printf("Desktop app installed, will monitor and quit menu bar if desktop app quits")
 
+	// Wait for desktop app to fully start before monitoring
+	time.Sleep(10 * time.Second)
+
+	// Track if desktop app was ever running
+	desktopWasRunning := false
+
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
 		// Check if desktop app is running
 		checkCmd := exec.Command("pgrep", "-f", "Family VPN.app")
-		if output, err := checkCmd.Output(); err != nil || len(output) == 0 {
+		if output, err := checkCmd.Output(); err == nil && len(output) > 0 {
+			desktopWasRunning = true
+		} else if desktopWasRunning {
+			// Only quit if desktop was running and then stopped
 			log.Printf("Desktop app quit, shutting down menu bar...")
 			systray.Quit()
 			os.Exit(0)
 		}
+		// If desktop never started, don't quit - just keep running standalone
 	}
 }
 
