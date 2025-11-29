@@ -57,12 +57,30 @@ else
 fi
 
 # Helper function to run sudo commands with password from .env
+# Uses expect as fallback when sudo -S fails (e.g., in sandboxed environments like Claude Code)
 run_sudo() {
+    local cmd="$*"
+
+    # Method 1: Try piped password (works in Terminal and SSH)
     if [ -n "$SUDO_PASSWORD" ]; then
-        echo "$SUDO_PASSWORD" | sudo -S "$@" 2>/dev/null
-    else
-        sudo "$@"
+        if echo "$SUDO_PASSWORD" | sudo -S "$@" 2>/dev/null; then
+            return 0
+        fi
     fi
+
+    # Method 2: Use expect to handle sudo (works in sandboxed environments)
+    if [ -n "$SUDO_PASSWORD" ] && command -v expect &> /dev/null; then
+        expect -c "
+            spawn sudo $cmd
+            expect \"Password:\"
+            send \"$SUDO_PASSWORD\r\"
+            expect eof
+        " 2>/dev/null && return 0
+    fi
+
+    # No interactive fallback - automation requires SUDO_PASSWORD in .env
+    echo -e "${RED}❌ sudo failed - ensure SUDO_PASSWORD is set in .env${NC}"
+    return 1
 }
 
 echo ""
