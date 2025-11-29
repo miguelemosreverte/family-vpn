@@ -11,6 +11,8 @@ let pingHistory = [];
 let pingHourChart = null;
 let ping24hChart = null;
 let ws = null; // WebSocket connection to server
+let clientVersions = {}; // VPN IP -> Git commit
+let serverVersion = 'unknown'; // Server's Git commit
 
 // =============== INITIALIZATION ===============
 
@@ -218,6 +220,19 @@ function handleWebSocketMessage(msg) {
             // Auto-update will be handled by the client process
             break;
 
+        case 'client_versions':
+            // Response from server with all client versions
+            console.log(`📦 Received client versions:`, msg.versions);
+            clientVersions = msg.versions || {};
+            if (msg.server_version) {
+                serverVersion = msg.server_version;
+            }
+            // Re-render versions dashboard if we're on it
+            if (currentDashboard === 'versions') {
+                renderVersionsDashboardFromWebSocket();
+            }
+            break;
+
         case 'update':
             // Layer 0 Update Protocol message
             handleUpdateMessage(msg.payload);
@@ -366,10 +381,18 @@ async function loadVolumesData() {
 
 async function loadVersionsData() {
     try {
-        // Get version information (mock for now)
-        const versionInfo = await getVersionInfo();
+        // Request client versions via WebSocket
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            console.log('📦 Requesting client versions from server...');
+            ws.send(JSON.stringify({ type: 'get_client_versions' }));
+        }
 
-        renderVersionsDashboard(versionInfo);
+        // Also get local Git commit for comparison
+        const localInfo = await getVersionInfo();
+        serverVersion = localInfo.server; // Use local git as server reference
+
+        // Render with whatever data we have (will be updated when WebSocket responds)
+        renderVersionsDashboardFromWebSocket();
     } catch (error) {
         console.error('Failed to load versions data:', error);
     }
@@ -704,6 +727,135 @@ function renderVersionsDashboard(versionInfo) {
     `;
 
     document.getElementById('clients-version-table').innerHTML = tableHTML;
+}
+
+// Render versions dashboard using WebSocket data
+function renderVersionsDashboardFromWebSocket() {
+    // Update server version
+    const serverVersionEl = document.getElementById('server-version');
+    if (serverVersionEl) {
+        const shortVersion = serverVersion.length > 8 ? serverVersion.substring(0, 8) : serverVersion;
+        serverVersionEl.innerHTML = `<code>${shortVersion}</code>`;
+    }
+
+    // Build clients list from peers + clientVersions
+    const clientsList = [];
+    const versionCounts = { upToDate: 0, updating: 0, behind: 0 };
+
+    // Use peers list as source of connected clients
+    for (const peer of peers) {
+        const vpnIP = peer.vpn_address;
+        const clientCommit = clientVersions[vpnIP] || 'unknown';
+        const shortCommit = clientCommit.length > 8 ? clientCommit.substring(0, 8) : clientCommit;
+
+        // Determine status by comparing to server version
+        let status = 'unknown';
+        let statusClass = 'status-unknown';
+
+        if (clientCommit === 'unknown') {
+            status = 'Unknown';
+            statusClass = 'status-unknown';
+        } else if (clientCommit === serverVersion) {
+            status = 'Up to date';
+            statusClass = 'status-healthy';
+            versionCounts.upToDate++;
+        } else {
+            status = 'Behind';
+            statusClass = 'status-degraded';
+            versionCounts.behind++;
+        }
+
+        clientsList.push({
+            hostname: peer.hostname,
+            vpnIP: vpnIP,
+            version: shortCommit,
+            fullVersion: clientCommit,
+            status: status,
+            statusClass: statusClass,
+            os: peer.os || 'unknown'
+        });
+    }
+
+    // Also add any clients from clientVersions that aren't in peers
+    for (const [vpnIP, commit] of Object.entries(clientVersions)) {
+        const alreadyAdded = clientsList.some(c => c.vpnIP === vpnIP);
+        if (!alreadyAdded) {
+            const shortCommit = commit.length > 8 ? commit.substring(0, 8) : commit;
+            const status = commit === serverVersion ? 'Up to date' : 'Behind';
+            const statusClass = commit === serverVersion ? 'status-healthy' : 'status-degraded';
+
+            if (commit === serverVersion) {
+                versionCounts.upToDate++;
+            } else {
+                versionCounts.behind++;
+            }
+
+            clientsList.push({
+                hostname: vpnIP, // Use IP as hostname if not in peers
+                vpnIP: vpnIP,
+                version: shortCommit,
+                fullVersion: commit,
+                status: status,
+                statusClass: statusClass,
+                os: 'unknown'
+            });
+        }
+    }
+
+    // Update deployment stats
+    document.getElementById('up-to-date-count').textContent = versionCounts.upToDate;
+    document.getElementById('updating-count').textContent = versionCounts.updating;
+    document.getElementById('behind-count').textContent = versionCounts.behind;
+
+    // Render client versions table
+    const container = document.getElementById('clients-version-table');
+    if (!container) return;
+
+    if (clientsList.length === 0) {
+        container.innerHTML = `
+            <p style="text-align: center; padding: 40px; color: #86868b;">
+                No clients connected yet. Client versions will appear here when they connect via VPN.
+            </p>
+        `;
+        return;
+    }
+
+    const tableHTML = `
+        <table>
+            <thead>
+                <tr>
+                    <th>Client</th>
+                    <th>VPN IP</th>
+                    <th>OS</th>
+                    <th>Version</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${clientsList.map(client => `
+                    <tr>
+                        <td>${client.hostname}</td>
+                        <td><code>${client.vpnIP}</code></td>
+                        <td>${getOSEmoji(client.os)} ${client.os}</td>
+                        <td><code title="${client.fullVersion}">${client.version}</code></td>
+                        <td><span class="status-badge ${client.statusClass}">${client.status}</span></td>
+                    </tr>
+                `).join('')}
+            </tbody>
+        </table>
+    `;
+
+    container.innerHTML = tableHTML;
+}
+
+// Helper to get OS emoji
+function getOSEmoji(os) {
+    switch (os.toLowerCase()) {
+        case 'darwin': return '🍎';
+        case 'linux': return '🐧';
+        case 'windows': return '🪟';
+        default: return '💻';
+    }
 }
 
 // =============== MOCK DATA GENERATORS ===============
