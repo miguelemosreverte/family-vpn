@@ -109,12 +109,19 @@ ipcMain.handle('get-disk-usage', async (event, peer) => {
       cmd = 'df -h | grep -E "^/dev/disk" | grep -v "com.apple"';
     } else {
       const username = getUsernameForPeer(peer);
-      cmd = `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${username}@${peer.vpn_address} "df -h | grep -E '^/dev/disk' | grep -v 'com.apple'"`;
+      cmd = `ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no ${username}@${peer.vpn_address} "df -h | grep -E '^/dev/disk' | grep -v 'com.apple'"`;
     }
 
-    exec(cmd, (err, stdout, stderr) => {
+    exec(cmd, { timeout: 20000 }, (err, stdout, stderr) => {
       if (err) {
-        resolve({ error: err.message, peer: peer.hostname });
+        // Provide clearer error messages
+        let errorMsg = 'Unable to connect';
+        if (err.message.includes('timeout') || err.message.includes('timed out')) {
+          errorMsg = 'Connection timeout - peer may be offline';
+        } else if (err.message.includes('refused')) {
+          errorMsg = 'SSH disabled or refused';
+        }
+        resolve({ error: errorMsg, peer: peer.hostname, vpn_address: peer.vpn_address });
         return;
       }
 
@@ -182,12 +189,19 @@ ipcMain.handle('get-volumes', async (event, peer) => {
       cmd = 'df -h';
     } else {
       const username = getUsernameForPeer(peer);
-      cmd = `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${username}@${peer.vpn_address} "df -h"`;
+      cmd = `ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no ${username}@${peer.vpn_address} "df -h"`;
     }
 
-    exec(cmd, (err, stdout, stderr) => {
+    exec(cmd, { timeout: 20000 }, (err, stdout, stderr) => {
       if (err) {
-        resolve({ error: err.message, peer: peer.hostname });
+        // Provide clearer error messages
+        let errorMsg = 'Unable to connect';
+        if (err.message.includes('timeout') || err.message.includes('timed out')) {
+          errorMsg = 'Connection timeout - peer may be offline';
+        } else if (err.message.includes('refused')) {
+          errorMsg = 'SSH disabled or refused';
+        }
+        resolve({ error: errorMsg, peer: peer.hostname, vpn_address: peer.vpn_address });
         return;
       }
 
