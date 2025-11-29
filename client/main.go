@@ -1022,6 +1022,20 @@ func main() {
 	key := []byte("0123456789abcdef0123456789abcdef") // 32 bytes for AES-256
 
 	client := NewVPNClient(*server, *encrypt, key, *noTimeout, *useTLS)
+
+	// Setup signal handler to ensure routing cleanup on kill/interrupt
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		sig := <-sigChan
+		log.Printf("Received signal %v, cleaning up...", sig)
+		if err := client.Disconnect(); err != nil {
+			log.Printf("Error during cleanup: %v", err)
+		}
+		os.Exit(0)
+	}()
+
 	if err := client.Connect(); err != nil {
 		log.Fatal(err)
 	}
