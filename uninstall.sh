@@ -24,7 +24,18 @@ echo ""
 
 # Load environment variables from .env file
 if [ -f "$SCRIPT_DIR/.env" ]; then
-    export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
+    # Only export valid KEY=VALUE lines, skip comments and empty lines
+    while IFS='=' read -r key value; do
+        # Skip empty lines, comments, and lines without =
+        if [[ -n "$key" && ! "$key" =~ ^# && -n "$value" ]]; then
+            # Remove leading/trailing whitespace from key
+            key=$(echo "$key" | xargs)
+            # Only export if key is a valid variable name
+            if [[ "$key" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+                export "$key=$value"
+            fi
+        fi
+    done < "$SCRIPT_DIR/.env"
     echo -e "${GREEN}✓ Loaded configuration from .env${NC}"
 else
     echo -e "${YELLOW}⚠️  No .env file found - sudo operations may require manual password entry${NC}"
