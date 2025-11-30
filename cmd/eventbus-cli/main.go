@@ -278,16 +278,29 @@ func cmdVersions() {
 		if err == nil && resp.Success {
 			fmt.Println("=== Client Versions === (via daemon)")
 			if data, ok := resp.Data.(map[string]interface{}); ok {
+				// Get hostname to IP mapping for display
+				hostnameToIP := make(map[string]string)
+				if h2ip, ok := data["hostname_to_ip"].(map[string]interface{}); ok {
+					for hostname, ip := range h2ip {
+						hostnameToIP[hostname], _ = ip.(string)
+					}
+				}
+
 				if versions, ok := data["versions"].(map[string]interface{}); ok {
 					if len(versions) == 0 {
 						fmt.Println("No clients connected")
 					}
-					for ip, commit := range versions {
+					for hostname, commit := range versions {
 						commitStr, _ := commit.(string)
 						if len(commitStr) > 8 {
 							commitStr = commitStr[:8]
 						}
-						fmt.Printf("  %s: %s\n", ip, commitStr)
+						// Show hostname with IP if available
+						if ip, hasIP := hostnameToIP[hostname]; hasIP && ip != "" {
+							fmt.Printf("  %s (%s): %s\n", hostname, ip, commitStr)
+						} else {
+							fmt.Printf("  %s: %s\n", hostname, commitStr)
+						}
 					}
 				}
 				if serverVersion, ok := data["server_version"].(string); ok && serverVersion != "" {

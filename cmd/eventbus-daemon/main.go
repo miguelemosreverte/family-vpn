@@ -62,8 +62,9 @@ type Daemon struct {
 	lastPong   time.Time
 	reconnects int
 
-	// Cached state from server
-	versions      map[string]string // vpn_ip -> git_commit
+	// Cached state from server - keyed by hostname (stable) not VPN IP (floating)
+	versions      map[string]string // hostname -> git_commit
+	hostnameToIP  map[string]string // hostname -> vpn_ip (for SSH routing)
 	serverVersion string
 	peers         []Peer
 	lastSnapshot  time.Time
@@ -131,9 +132,10 @@ func main() {
 	}
 
 	daemon := &Daemon{
-		versions: make(map[string]string),
-		shutdown: make(chan struct{}),
-		logger:   logger,
+		versions:     make(map[string]string),
+		hostnameToIP: make(map[string]string),
+		shutdown:     make(chan struct{}),
+		logger:       logger,
 	}
 
 	// Get local info
@@ -325,6 +327,7 @@ func (d *Daemon) cmdVersions() CLIResponse {
 		Success: true,
 		Data: map[string]interface{}{
 			"versions":       d.versions,
+			"hostname_to_ip": d.hostnameToIP,
 			"server_version": d.serverVersion,
 		},
 	}
@@ -714,10 +717,20 @@ func (d *Daemon) handleVersionEvent(msg map[string]interface{}) {
 		return
 	}
 
+	hostname, _ := data["hostname"].(string)
 	vpnIP, _ := data["vpn_ip"].(string)
 	version, _ := data["version"].(string)
 
-	if vpnIP != "" && version != "" {
+	// Use hostname as primary key (stable), fall back to vpn_ip only if no hostname
+	if hostname != "" && version != "" {
+		d.mu.Lock()
+		d.versions[hostname] = version
+		if vpnIP != "" {
+			d.hostnameToIP[hostname] = vpnIP
+		}
+		d.mu.Unlock()
+	} else if vpnIP != "" && version != "" {
+		// Legacy: server sent only vpn_ip, store with vpn_ip as key
 		d.mu.Lock()
 		d.versions[vpnIP] = version
 		d.mu.Unlock()
