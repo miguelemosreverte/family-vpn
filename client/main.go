@@ -415,20 +415,26 @@ func (c *VPNClient) Connect() error {
 		log.Printf("Connected to VPN server at %s", c.serverAddr)
 	}
 
-	// Tune TCP socket for high throughput
+	// Tune TCP socket for high throughput and enable keepalive
 	if tlsConn, ok := conn.(*tls.Conn); ok {
 		// For TLS connections, get underlying TCP connection
 		if tcpConn, ok := tlsConn.NetConn().(*net.TCPConn); ok {
 			tcpConn.SetReadBuffer(1024 * 1024)  // 1MB receive buffer
 			tcpConn.SetWriteBuffer(1024 * 1024) // 1MB send buffer
 			tcpConn.SetNoDelay(true)            // Disable Nagle's algorithm for low latency
-			log.Printf("TCP socket tuned: 1MB buffers, NoDelay enabled")
+			// Enable TCP keepalive to prevent NAT/firewall timeouts
+			tcpConn.SetKeepAlive(true)
+			tcpConn.SetKeepAlivePeriod(30 * time.Second) // Send keepalive every 30s
+			log.Printf("TCP socket tuned: 1MB buffers, NoDelay enabled, Keepalive 30s")
 		}
 	} else if tcpConn, ok := conn.(*net.TCPConn); ok {
 		tcpConn.SetReadBuffer(1024 * 1024)  // 1MB receive buffer
 		tcpConn.SetWriteBuffer(1024 * 1024) // 1MB send buffer
 		tcpConn.SetNoDelay(true)            // Disable Nagle's algorithm for low latency
-		log.Printf("TCP socket tuned: 1MB buffers, NoDelay enabled")
+		// Enable TCP keepalive to prevent NAT/firewall timeouts
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(30 * time.Second) // Send keepalive every 30s
+		log.Printf("TCP socket tuned: 1MB buffers, NoDelay enabled, Keepalive 30s")
 	}
 
 	c.conn = conn

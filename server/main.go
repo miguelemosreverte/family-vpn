@@ -70,6 +70,8 @@ type VPNServer struct {
 	peers         map[string]*PeerInfo  // key: VPN IP address
 	peersMutex    sync.RWMutex
 	nextClientIP  int  // Counter for assigning IPs (10.8.0.2, 10.8.0.3, etc.)
+	// IP persistence: remember hostname->IP assignments so reconnects get same IP
+	hostnameToIP  map[string]string // key: hostname, value: last assigned VPN IP
 	// Peer-to-peer routing
 	peerConnections map[string]net.Conn // key: VPN IP address, value: client connection
 	peerEncryption  map[string]bool     // key: VPN IP address, value: wants encryption
@@ -118,6 +120,7 @@ func NewVPNServer(listenAddr string, encryption bool, key []byte) *VPNServer {
 		peerConnections: make(map[string]net.Conn),
 		peerEncryption:  make(map[string]bool),
 		nextClientIP:    2, // Start from 10.8.0.2 (10.8.0.1 is server)
+		hostnameToIP:    make(map[string]string), // IP persistence for reconnects
 		wsClients:       make(map[string]*WSClient),
 		wsUpgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true }, // Allow all origins for VPN clients
@@ -516,7 +519,10 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 		tcpConn.SetReadBuffer(1024 * 1024)  // 1MB receive buffer
 		tcpConn.SetWriteBuffer(1024 * 1024) // 1MB send buffer
 		tcpConn.SetNoDelay(true)            // Disable Nagle's algorithm for low latency
-		log.Printf("TCP socket tuned: 1MB buffers, NoDelay enabled")
+		// Enable TCP keepalive to prevent NAT/firewall timeouts
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(30 * time.Second) // Send keepalive every 30s
+		log.Printf("TCP socket tuned: 1MB buffers, NoDelay enabled, Keepalive 30s")
 	}
 
 	// Read client's encryption preference
@@ -549,10 +555,27 @@ func (s *VPNServer) handleClient(conn net.Conn) {
 		return
 	}
 
-	// Assign VPN IP address
+	// Assign VPN IP address (with persistence - same hostname gets same IP)
 	s.peersMutex.Lock()
-	assignedVPNIP = fmt.Sprintf("10.8.0.%d", s.nextClientIP)
-	s.nextClientIP++
+	if existingIP, exists := s.hostnameToIP[peerInfo.Hostname]; exists {
+		// Check if the IP is not currently in use by another connected peer
+		if _, inUse := s.peerConnections[existingIP]; !inUse {
+			assignedVPNIP = existingIP
+			log.Printf("[IP-PERSIST] Reusing IP %s for returning host %s", existingIP, peerInfo.Hostname)
+		} else {
+			// IP is in use (shouldn't happen often), assign new one
+			assignedVPNIP = fmt.Sprintf("10.8.0.%d", s.nextClientIP)
+			s.nextClientIP++
+			s.hostnameToIP[peerInfo.Hostname] = assignedVPNIP
+			log.Printf("[IP-PERSIST] Previous IP %s in use, assigned new IP %s to %s", existingIP, assignedVPNIP, peerInfo.Hostname)
+		}
+	} else {
+		// New hostname, assign fresh IP
+		assignedVPNIP = fmt.Sprintf("10.8.0.%d", s.nextClientIP)
+		s.nextClientIP++
+		s.hostnameToIP[peerInfo.Hostname] = assignedVPNIP
+		log.Printf("[IP-PERSIST] New host %s assigned IP %s", peerInfo.Hostname, assignedVPNIP)
+	}
 	s.peersMutex.Unlock()
 
 	// Send assigned VPN IP back to client
