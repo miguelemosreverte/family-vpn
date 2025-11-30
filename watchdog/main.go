@@ -544,6 +544,54 @@ func (w *Watchdog) checkInternet() bool {
 	return false
 }
 
+// isVPNClientRunning checks if the VPN client process is actually running
+// Uses a more precise check than simple pgrep to avoid false positives
+func (w *Watchdog) isVPNClientRunning() bool {
+	// Check for the actual VPN client binary (not grep or other matches)
+	cmd := exec.Command("bash", "-c",
+		"ps aux | grep '[f]amily-vpn-client' | grep -v grep")
+	output, err := cmd.Output()
+	if err == nil && len(strings.TrimSpace(string(output))) > 0 {
+		return true
+	}
+
+	// Also check for tun interface as evidence of running VPN
+	tunCmd := exec.Command("bash", "-c", "ifconfig | grep -q 'utun.*inet 10.8.0'")
+	if tunCmd.Run() == nil {
+		return true
+	}
+
+	return false
+}
+
+// triggerVPNReconnect signals the menu bar to reconnect the VPN
+func (w *Watchdog) triggerVPNReconnect() {
+	log.Println("[VPN] Triggering VPN reconnection via IPC...")
+
+	// Method 1: Signal via the IPC endpoint (if menu bar is running)
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post("http://localhost:8889/vpn/reconnect", "application/json", nil)
+	if err == nil {
+		resp.Body.Close()
+		if resp.StatusCode == 200 {
+			log.Println("[VPN] Successfully triggered reconnect via IPC")
+			return
+		}
+	}
+
+	// Method 2: Write a reconnect signal file that menu bar watches
+	homeDir, _ := os.UserHomeDir()
+	signalFile := filepath.Join(homeDir, ".family-vpn-reconnect-signal")
+	if err := os.WriteFile(signalFile, []byte(time.Now().Format(time.RFC3339)), 0644); err == nil {
+		log.Println("[VPN] Wrote reconnect signal file")
+	}
+
+	// Method 3: Kill any zombie vpn-client processes and let menu bar restart
+	exec.Command("pkill", "-9", "-f", "family-vpn-client").Run()
+
+	log.Println("[VPN] Reconnect signal sent - waiting for menu bar to handle")
+}
+
 // restoreInternet attempts to restore internet connectivity
 func (w *Watchdog) restoreInternet() {
 	log.Println("[NETWORK] Attempting to restore internet connectivity...")
@@ -663,10 +711,17 @@ func (w *Watchdog) healthCheck(checkNum int) {
 		}
 	}
 
+	// Check VPN client - the most critical component!
+	vpnClientRunning := w.isVPNClientRunning()
+	if !vpnClientRunning && internetOK && menuBarRunning {
+		log.Println("[HEALTH] VPN client NOT running! Triggering reconnect...")
+		w.triggerVPNReconnect()
+	}
+
 	// Status log (compact)
 	if checkNum%6 == 1 {
-		log.Printf("[HEALTH] Status: Net=%v Menu=%v Desktop=%v LaunchAttempts=%d",
-			internetOK, menuBarRunning, desktopRunning, w.desktopLaunchCount)
+		log.Printf("[HEALTH] Status: Net=%v Menu=%v Desktop=%v VPN=%v LaunchAttempts=%d",
+			internetOK, menuBarRunning, desktopRunning, vpnClientRunning, w.desktopLaunchCount)
 	}
 }
 

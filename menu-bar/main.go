@@ -321,10 +321,49 @@ func watchUpdateSignal() {
 	}
 }
 
+// watchReconnectSignal watches for reconnect signal file from watchdog
+func watchReconnectSignal() {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("Failed to get home dir: %v", err)
+		return
+	}
+	signalFile := filepath.Join(homeDir, ".family-vpn-reconnect-signal")
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		<-ticker.C
+
+		// Check if signal file exists
+		_, err := os.ReadFile(signalFile)
+		if err != nil {
+			continue // File doesn't exist or can't read
+		}
+
+		log.Println("🔄 Reconnect signal received from watchdog")
+
+		// Remove signal file
+		os.Remove(signalFile)
+
+		// Only reconnect if we're not already connected
+		if !vpnState.Connected {
+			log.Println("[RECONNECT] VPN not connected, triggering reconnect...")
+			go connectVPN()
+		} else {
+			log.Println("[RECONNECT] VPN already connected, ignoring signal")
+		}
+	}
+}
+
 // autoUpdater runs in background and checks for updates every hour
 func autoUpdater() {
 	// Start signal file watcher (for real-time updates from VPN server)
 	go watchUpdateSignal()
+
+	// Start reconnect signal watcher (for watchdog-triggered reconnects)
+	go watchReconnectSignal()
 
 	// Wait 5 minutes before first check (let app start up first)
 	time.Sleep(5 * time.Minute)
@@ -498,9 +537,25 @@ func toggleVPN() {
 }
 
 func connectVPN() {
-	// SINGLETON: Check if VPN client is already running
-	checkCmd := exec.Command("pgrep", "-f", "vpn-client")
-	if output, err := checkCmd.Output(); err == nil && len(output) > 0 {
+	// SINGLETON: Check if VPN client is ACTUALLY running
+	// Use more precise check to avoid false positives from pgrep matching grep/ssh commands
+	isVPNRunning := false
+
+	// Method 1: Check for the actual binary process
+	checkCmd := exec.Command("bash", "-c", "ps aux | grep '[f]amily-vpn-client' | grep -v grep")
+	if output, err := checkCmd.Output(); err == nil && len(strings.TrimSpace(string(output))) > 0 {
+		isVPNRunning = true
+	}
+
+	// Method 2: Check for TUN interface as evidence of active VPN
+	if !isVPNRunning {
+		tunCmd := exec.Command("bash", "-c", "ifconfig | grep -q 'utun.*inet 10.8.0'")
+		if tunCmd.Run() == nil {
+			isVPNRunning = true
+		}
+	}
+
+	if isVPNRunning {
 		log.Println("⚠️  VPN client already running - skipping duplicate start")
 		// Assume already connected
 		vpnState.Connected = true
