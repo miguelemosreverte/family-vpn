@@ -172,6 +172,34 @@ echo -e "${GREEN}✓ Watchdog built successfully${NC}"
 cd ..
 
 echo ""
+echo "📡 Building EventBus Daemon & CLI..."
+echo "-------------------------------------"
+
+# Build eventbus-daemon
+cd cmd/eventbus-daemon
+echo "Building eventbus-daemon..."
+go mod download 2>/dev/null || true
+GOTOOLCHAIN=local go build -o ../../bin/eventbus-daemon . 2>/dev/null || go build -o ../../bin/eventbus-daemon .
+if [ $? -ne 0 ]; then
+    echo -e "${RED}❌ Failed to build eventbus-daemon${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓ EventBus daemon built successfully${NC}"
+cd ../..
+
+# Build eventbus-cli
+cd cmd/eventbus-cli
+echo "Building eventbus-cli..."
+go mod download 2>/dev/null || true
+GOTOOLCHAIN=local go build -o ../../bin/eventbus-cli . 2>/dev/null || go build -o ../../bin/eventbus-cli .
+if [ $? -ne 0 ]; then
+    echo -e "${RED}❌ Failed to build eventbus-cli${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓ EventBus CLI built successfully${NC}"
+cd ../..
+
+echo ""
 echo "🎨 Generating App Icon..."
 echo "-------------------------"
 
@@ -290,6 +318,28 @@ run_sudo cp "watchdog/family-vpn-watchdog" "/usr/local/bin/family-vpn-watchdog"
 run_sudo chmod +x "/usr/local/bin/family-vpn-watchdog"
 echo -e "${GREEN}✓ Watchdog installed to /usr/local/bin/${NC}"
 
+# Install eventbus-daemon
+EVENTBUS_DAEMON_PATH="/usr/local/bin/eventbus-daemon"
+if [ -f "$EVENTBUS_DAEMON_PATH" ]; then
+    echo -e "${YELLOW}⚠️  Removing existing eventbus-daemon...${NC}"
+    run_sudo rm -f "$EVENTBUS_DAEMON_PATH"
+fi
+
+run_sudo cp "bin/eventbus-daemon" "/usr/local/bin/eventbus-daemon"
+run_sudo chmod +x "/usr/local/bin/eventbus-daemon"
+echo -e "${GREEN}✓ EventBus daemon installed to /usr/local/bin/${NC}"
+
+# Install eventbus-cli
+EVENTBUS_CLI_PATH="/usr/local/bin/eventbus-cli"
+if [ -f "$EVENTBUS_CLI_PATH" ]; then
+    echo -e "${YELLOW}⚠️  Removing existing eventbus-cli...${NC}"
+    run_sudo rm -f "$EVENTBUS_CLI_PATH"
+fi
+
+run_sudo cp "bin/eventbus-cli" "/usr/local/bin/eventbus-cli"
+run_sudo chmod +x "/usr/local/bin/eventbus-cli"
+echo -e "${GREEN}✓ EventBus CLI installed to /usr/local/bin/${NC}"
+
 echo ""
 echo "🔐 Setting up configuration..."
 echo "------------------------------"
@@ -330,6 +380,20 @@ chmod 644 "$LAUNCHD_PLIST"
 # Load and start the watchdog
 launchctl load "$LAUNCHD_PLIST"
 echo -e "${GREEN}✓ Watchdog service installed and started${NC}"
+
+# Install and start the eventbus daemon service
+EVENTBUS_PLIST="$HOME/Library/LaunchAgents/com.family.vpn.eventbus.plist"
+
+# Stop existing eventbus daemon if running
+launchctl unload "$EVENTBUS_PLIST" 2>/dev/null
+
+# Install the plist
+cp "cmd/eventbus-daemon/com.family.vpn.eventbus.plist" "$EVENTBUS_PLIST"
+chmod 644 "$EVENTBUS_PLIST"
+
+# Load and start the eventbus daemon
+launchctl load "$EVENTBUS_PLIST"
+echo -e "${GREEN}✓ EventBus daemon service installed and started${NC}"
 
 # Also add desktop app to Login Items for visibility (watchdog will manage it)
 osascript -e 'tell application "System Events" to make login item at end with properties {path:"/Applications/Family VPN.app", hidden:false}' 2>/dev/null && \
