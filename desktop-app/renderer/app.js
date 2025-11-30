@@ -10,9 +10,16 @@ let currentDashboard = 'health';
 let pingHistory = [];
 let pingHourChart = null;
 let ping24hChart = null;
+let latencyTimeSeriesChart = null;
+let throughputTimeSeriesChart = null;
 let eventBus = null; // EventBus client for Layer 0 events
 let clientVersions = {}; // VPN IP -> Git commit
 let serverVersion = 'unknown'; // Server's Git commit
+let hostnameToIP = {}; // Hostname -> VPN IP mapping
+let clientStats = {}; // Client statistics from daemon
+let eventLogs = []; // Event logs buffer
+let daemonHealth = null; // Daemon health status
+let benchmarkData = null; // Benchmark results
 
 // =============== INITIALIZATION ===============
 
@@ -225,10 +232,15 @@ function handleVersionEvent(event) {
     if (event.data.versions) {
         clientVersions = event.data.versions;
     }
+    if (event.data.hostname_to_ip) {
+        hostnameToIP = event.data.hostname_to_ip;
+        populateClientSelects();
+    }
 
     // Re-render versions dashboard if we're on it
     if (currentDashboard === 'versions') {
         renderVersionsDashboardFromWebSocket();
+        renderHostnameMapping();
     }
 }
 
@@ -342,9 +354,68 @@ function handleWebSocketMessage(msg) {
             if (msg.server_version) {
                 serverVersion = msg.server_version;
             }
+            if (msg.hostname_to_ip) {
+                hostnameToIP = msg.hostname_to_ip;
+                populateClientSelects();
+            }
             // Re-render versions dashboard if we're on it
             if (currentDashboard === 'versions') {
                 renderVersionsDashboardFromWebSocket();
+                renderHostnameMapping();
+            }
+            break;
+
+        case 'health':
+            // Health data from daemon
+            console.log('💚 Received health data:', msg);
+            daemonHealth = msg;
+            if (currentDashboard === 'health') {
+                renderDaemonStatus();
+            }
+            break;
+
+        case 'stats':
+            // Client statistics from daemon
+            console.log('📈 Received client stats:', msg);
+            if (msg.clients) {
+                clientStats = msg.clients;
+            } else if (msg.client) {
+                // Single client stats
+                const hostname = msg.client.hostname;
+                if (hostname) {
+                    clientStats[hostname] = msg.client;
+                }
+            }
+            if (currentDashboard === 'health') {
+                renderClientStats();
+            }
+            break;
+
+        case 'logs':
+            // Event logs from daemon
+            console.log(`📝 Received ${msg.events?.length || 0} log entries`);
+            eventLogs = msg.events || [];
+            if (currentDashboard === 'health') {
+                renderEventLogs();
+            }
+            break;
+
+        case 'benchmark':
+            // Benchmark results
+            console.log('⚡ Received benchmark data:', msg);
+            benchmarkData = msg;
+            if (currentDashboard === 'health') {
+                renderBenchmarkData();
+            }
+            break;
+
+        case 'timeseries':
+            // Time series data
+            console.log(`📈 Received time series: ${msg.series}`, msg);
+            if (msg.series === 'latency') {
+                renderLatencyTimeSeries(msg);
+            } else if (msg.series === 'throughput') {
+                renderThroughputTimeSeries(msg);
             }
             break;
 
@@ -453,6 +524,9 @@ async function loadHealthData() {
         // Get VPN peers
         peers = await window.vpnAPI.getPeers();
 
+        // Populate client selects with peer data
+        populateClientSelects();
+
         // Ping history will be loaded via WebSocket
         // (No need to generate mock data - it comes from server)
 
@@ -461,6 +535,18 @@ async function loadHealthData() {
         renderHealthCharts();
         renderPeerStatus();
         renderPingHistoryTable();
+        renderDaemonStatus();
+        renderClientStats();
+        renderBenchmarkData();
+        renderEventLogs();
+
+        // Load additional data from server
+        loadDaemonHealth();
+        loadClientStats();
+        loadBenchmarkData();
+        loadEventLogs();
+        loadLatencyTimeSeries();
+        loadThroughputTimeSeries();
     } catch (error) {
         console.error('Failed to load health data:', error);
     }
@@ -506,8 +592,12 @@ async function loadVersionsData() {
         const localInfo = await getVersionInfo();
         serverVersion = localInfo.server; // Use local git as server reference
 
+        // Populate client selects
+        populateClientSelects();
+
         // Render with whatever data we have (will be updated when EventBus responds)
         renderVersionsDashboardFromWebSocket();
+        renderHostnameMapping();
     } catch (error) {
         console.error('Failed to load versions data:', error);
     }
@@ -944,6 +1034,7 @@ function renderVersionsDashboardFromWebSocket() {
                     <th>OS</th>
                     <th>Version</th>
                     <th>Status</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -954,6 +1045,9 @@ function renderVersionsDashboardFromWebSocket() {
                         <td>${getOSEmoji(client.os)} ${client.os}</td>
                         <td><code title="${client.fullVersion}">${client.version}</code></td>
                         <td><span class="status-badge ${client.statusClass}">${client.status}</span></td>
+                        <td class="action-cell">
+                            <button class="action-btn-mini" onclick="updateClient('${client.vpnIP}')" title="Update to latest">Update</button>
+                        </td>
                     </tr>
                 `).join('')}
             </tbody>
@@ -962,6 +1056,27 @@ function renderVersionsDashboardFromWebSocket() {
 
     container.innerHTML = tableHTML;
 }
+
+// Update a single client
+async function updateClient(vpnIP) {
+    try {
+        if (eventBus && eventBus.connected) {
+            eventBus.send('broadcast', {
+                ns: 'updates.available',
+                data: {
+                    targets: [vpnIP],
+                    version: '',
+                    domain: 'all'
+                }
+            });
+            showNotification(`Update triggered for ${vpnIP}`, 'success');
+        }
+    } catch (error) {
+        console.error('Failed to update client:', error);
+        showNotification('Failed to update client', 'error');
+    }
+}
+window.updateClient = updateClient;
 
 // Helper to get OS emoji
 function getOSEmoji(os) {
@@ -1019,6 +1134,595 @@ async function triggerUpdateAll() {
 
 // Make it globally accessible for onclick handler
 window.triggerUpdateAll = triggerUpdateAll;
+
+// =============== TARGETED UPDATE ===============
+
+async function triggerTargetedUpdate() {
+    const targetSelect = document.getElementById('update-target-select');
+    const versionInput = document.getElementById('update-version-input');
+    const target = targetSelect.value;
+    const version = versionInput.value.trim();
+
+    if (!target) {
+        showNotification('Please select a target client', 'error');
+        return;
+    }
+
+    const button = document.getElementById('targeted-update-btn');
+    button.disabled = true;
+    button.textContent = 'Updating...';
+
+    try {
+        // Send update event via EventBus
+        if (eventBus && eventBus.connected) {
+            eventBus.send('broadcast', {
+                ns: 'updates.available',
+                data: {
+                    targets: [target],
+                    version: version || '',
+                    domain: 'all'
+                }
+            });
+            showNotification(`Update triggered for ${target}`, 'success');
+        } else {
+            throw new Error('EventBus not connected');
+        }
+    } catch (error) {
+        console.error('Failed to trigger targeted update:', error);
+        showNotification('Failed to trigger update: ' + error.message, 'error');
+    } finally {
+        setTimeout(() => {
+            button.disabled = false;
+            button.textContent = 'Update Selected Client';
+        }, 2000);
+    }
+}
+window.triggerTargetedUpdate = triggerTargetedUpdate;
+
+// =============== ROLLBACK ===============
+
+async function triggerRollback() {
+    const targetSelect = document.getElementById('rollback-target-select');
+    const commitInput = document.getElementById('rollback-commit-input');
+    const statusEl = document.getElementById('rollback-status');
+    const target = targetSelect.value;
+    const commit = commitInput.value.trim();
+
+    if (!target) {
+        statusEl.textContent = 'Please select a target client';
+        statusEl.className = 'action-status error';
+        return;
+    }
+
+    if (!commit) {
+        statusEl.textContent = 'Please enter a commit hash';
+        statusEl.className = 'action-status error';
+        return;
+    }
+
+    const button = document.getElementById('rollback-btn');
+    button.disabled = true;
+    button.textContent = 'Rolling back...';
+    statusEl.textContent = 'Sending rollback command...';
+    statusEl.className = 'action-status';
+
+    try {
+        // Send rollback event via EventBus
+        if (eventBus && eventBus.connected) {
+            eventBus.send('broadcast', {
+                ns: 'updates.available',
+                data: {
+                    targets: [target],
+                    version: commit,
+                    rollback: true,
+                    domain: 'all'
+                }
+            });
+            statusEl.textContent = `Rollback triggered for ${target} to ${commit.substring(0, 8)}`;
+            statusEl.className = 'action-status success';
+            showNotification('Rollback command sent', 'success');
+        } else {
+            throw new Error('EventBus not connected');
+        }
+    } catch (error) {
+        console.error('Failed to trigger rollback:', error);
+        statusEl.textContent = 'Error: ' + error.message;
+        statusEl.className = 'action-status error';
+        showNotification('Failed to trigger rollback: ' + error.message, 'error');
+    } finally {
+        setTimeout(() => {
+            button.disabled = false;
+            button.textContent = 'Rollback Client';
+        }, 2000);
+    }
+}
+window.triggerRollback = triggerRollback;
+
+// =============== SYNC VERSIONS ===============
+
+async function syncVersions() {
+    const button = document.getElementById('sync-versions-btn');
+    const statusEl = document.getElementById('update-status');
+
+    button.disabled = true;
+    button.textContent = 'Syncing...';
+    statusEl.textContent = 'Requesting version sync from all clients...';
+    statusEl.className = 'action-status';
+
+    try {
+        if (eventBus && eventBus.connected) {
+            eventBus.send('broadcast', {
+                ns: 'versions.sync',
+                data: {}
+            });
+            statusEl.textContent = 'Version sync requested';
+            statusEl.className = 'action-status success';
+            showNotification('Version sync requested', 'success');
+        } else {
+            throw new Error('EventBus not connected');
+        }
+    } catch (error) {
+        console.error('Failed to sync versions:', error);
+        statusEl.textContent = 'Error: ' + error.message;
+        statusEl.className = 'action-status error';
+    } finally {
+        setTimeout(() => {
+            button.disabled = false;
+            button.textContent = 'Sync Versions';
+        }, 2000);
+    }
+}
+window.syncVersions = syncVersions;
+
+// =============== REFRESH VERSIONS ===============
+
+async function refreshVersions() {
+    if (eventBus && eventBus.connected) {
+        console.log('Requesting client versions...');
+        eventBus.send('get_client_versions');
+        showNotification('Refreshing versions...', 'info');
+    }
+}
+window.refreshVersions = refreshVersions;
+
+// =============== DAEMON HEALTH ===============
+
+async function loadDaemonHealth() {
+    try {
+        // Request health data via EventBus
+        if (eventBus && eventBus.connected) {
+            eventBus.send('get_health');
+        }
+    } catch (error) {
+        console.error('Failed to load daemon health:', error);
+    }
+}
+
+function renderDaemonStatus() {
+    const statusEl = document.getElementById('daemon-status');
+    const wsStatusEl = document.getElementById('daemon-ws-status');
+    const uptimeEl = document.getElementById('daemon-uptime');
+    const reconnectsEl = document.getElementById('daemon-reconnects');
+    const eventsEl = document.getElementById('daemon-events');
+
+    if (!daemonHealth) {
+        statusEl.textContent = 'Unknown';
+        wsStatusEl.textContent = '--';
+        uptimeEl.textContent = '--';
+        reconnectsEl.textContent = '--';
+        eventsEl.textContent = '--';
+        return;
+    }
+
+    const daemon = daemonHealth.daemon || {};
+
+    statusEl.textContent = daemon.connected ? 'CONNECTED' : 'DISCONNECTED';
+    statusEl.className = `daemon-value ${daemon.connected ? 'connected' : 'disconnected'}`;
+
+    wsStatusEl.textContent = daemon.connected ? 'Active' : 'Inactive';
+    wsStatusEl.className = `daemon-value ${daemon.connected ? 'connected' : 'disconnected'}`;
+
+    uptimeEl.textContent = daemon.uptime || '--';
+    reconnectsEl.textContent = daemon.reconnects !== undefined ? daemon.reconnects : '--';
+    eventsEl.textContent = daemon.event_count !== undefined ? daemon.event_count : '--';
+}
+
+// =============== BENCHMARK ===============
+
+async function runBenchmark() {
+    const button = document.getElementById('run-benchmark-btn');
+    button.disabled = true;
+    button.textContent = 'Running...';
+
+    try {
+        if (eventBus && eventBus.connected) {
+            eventBus.send('benchmark', { action: 'run' });
+            showNotification('Benchmark started', 'info');
+        }
+    } catch (error) {
+        console.error('Failed to run benchmark:', error);
+        showNotification('Failed to run benchmark', 'error');
+    } finally {
+        setTimeout(() => {
+            button.disabled = false;
+            button.textContent = 'Run Benchmark';
+        }, 3000);
+    }
+}
+window.runBenchmark = runBenchmark;
+
+async function loadBenchmarkData() {
+    try {
+        if (eventBus && eventBus.connected) {
+            eventBus.send('benchmark', { action: 'latest' });
+        }
+    } catch (error) {
+        console.error('Failed to load benchmark data:', error);
+    }
+}
+
+function renderBenchmarkData() {
+    const latencyEl = document.getElementById('benchmark-latency');
+    const throughputEl = document.getElementById('benchmark-throughput');
+    const lastRunEl = document.getElementById('benchmark-last-run');
+    const statusEl = document.getElementById('benchmark-status');
+
+    if (!benchmarkData) {
+        latencyEl.textContent = '--';
+        throughputEl.textContent = '--';
+        lastRunEl.textContent = 'Never';
+        statusEl.textContent = 'No data available';
+        return;
+    }
+
+    latencyEl.textContent = benchmarkData.avg_latency ? `${benchmarkData.avg_latency}ms` : '--';
+    throughputEl.textContent = benchmarkData.throughput ? `${benchmarkData.throughput}/s` : '--';
+
+    if (benchmarkData.timestamp) {
+        const date = new Date(benchmarkData.timestamp);
+        lastRunEl.textContent = date.toLocaleTimeString();
+    }
+
+    statusEl.textContent = benchmarkData.status || 'Completed';
+}
+
+// =============== TIME SERIES ===============
+
+async function loadLatencyTimeSeries() {
+    const range = document.getElementById('latency-timeseries-range').value;
+    try {
+        if (eventBus && eventBus.connected) {
+            eventBus.send('timeseries', { series: 'latency', last: range });
+        }
+    } catch (error) {
+        console.error('Failed to load latency time series:', error);
+    }
+}
+window.loadLatencyTimeSeries = loadLatencyTimeSeries;
+
+async function loadThroughputTimeSeries() {
+    const range = document.getElementById('throughput-timeseries-range').value;
+    try {
+        if (eventBus && eventBus.connected) {
+            eventBus.send('timeseries', { series: 'throughput', last: range });
+        }
+    } catch (error) {
+        console.error('Failed to load throughput time series:', error);
+    }
+}
+window.loadThroughputTimeSeries = loadThroughputTimeSeries;
+
+function renderLatencyTimeSeries(data) {
+    if (latencyTimeSeriesChart) {
+        latencyTimeSeriesChart.destroy();
+    }
+
+    const canvas = document.getElementById('latency-timeseries-chart');
+    if (!canvas || !data || !data.points) return;
+
+    const labels = data.points.map(p => {
+        const date = new Date(p.timestamp);
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    });
+
+    const values = data.points.map(p => p.value);
+
+    latencyTimeSeriesChart = new Chart(canvas, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'Latency (ms)',
+                data: values,
+                borderColor: '#ff9500',
+                backgroundColor: 'rgba(255, 149, 0, 0.1)',
+                tension: 0.4,
+                fill: true
+            }]
+        },
+        options: getChartOptions('Latency')
+    });
+}
+
+function renderThroughputTimeSeries(data) {
+    if (throughputTimeSeriesChart) {
+        throughputTimeSeriesChart.destroy();
+    }
+
+    const canvas = document.getElementById('throughput-timeseries-chart');
+    if (!canvas || !data || !data.points) return;
+
+    const labels = data.points.map(p => {
+        const date = new Date(p.timestamp);
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    });
+
+    const values = data.points.map(p => p.value);
+
+    throughputTimeSeriesChart = new Chart(canvas, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'Throughput (events/s)',
+                data: values,
+                borderColor: '#30d158',
+                backgroundColor: 'rgba(48, 209, 88, 0.1)',
+                tension: 0.4,
+                fill: true
+            }]
+        },
+        options: getChartOptions('Throughput')
+    });
+}
+
+// =============== CLIENT STATISTICS ===============
+
+async function loadClientStats() {
+    const hostname = document.getElementById('stats-client-filter').value;
+    try {
+        if (eventBus && eventBus.connected) {
+            eventBus.send('get_stats', { hostname: hostname });
+        }
+    } catch (error) {
+        console.error('Failed to load client stats:', error);
+    }
+}
+window.loadClientStats = loadClientStats;
+
+function renderClientStats() {
+    const container = document.getElementById('client-stats-grid');
+    if (!container) return;
+
+    if (!clientStats || Object.keys(clientStats).length === 0) {
+        container.innerHTML = `
+            <p style="grid-column: 1/-1; text-align: center; color: #86868b; padding: 20px;">
+                No client statistics available yet. Stats will appear as clients connect and report.
+            </p>
+        `;
+        return;
+    }
+
+    const cards = Object.entries(clientStats).map(([hostname, stats]) => {
+        const vpnIP = stats.vpn_ip || hostnameToIP[hostname] || '--';
+        const version = stats.current_version ? stats.current_version.substring(0, 8) : '--';
+
+        return `
+            <div class="client-stat-card">
+                <h4>
+                    ${hostname}
+                    <span class="vpn-ip">${vpnIP}</span>
+                </h4>
+                <div class="stat-row">
+                    <span class="label">Version</span>
+                    <span class="value"><code>${version}</code></span>
+                </div>
+                <div class="stat-row">
+                    <span class="label">Connects</span>
+                    <span class="value">${stats.connects || 0}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="label">Disconnects</span>
+                    <span class="value">${stats.disconnects || 0}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="label">Deployments</span>
+                    <span class="value">${stats.deployments || 0}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="label">Successful</span>
+                    <span class="value" style="color: #30d158;">${stats.successful_deploys || 0}</span>
+                </div>
+                ${stats.failed_deploys ? `
+                <div class="stat-row">
+                    <span class="label">Failed</span>
+                    <span class="value" style="color: #ff3b30;">${stats.failed_deploys}</span>
+                </div>
+                ` : ''}
+                <div class="stat-row">
+                    <span class="label">Last Seen</span>
+                    <span class="value">${formatLastSeen(stats.last_seen)}</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    container.innerHTML = cards;
+}
+
+function formatLastSeen(lastSeen) {
+    if (!lastSeen) return '--';
+    try {
+        const date = new Date(lastSeen);
+        const now = new Date();
+        const diff = now - date;
+
+        if (diff < 60000) return 'Just now';
+        if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+        if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+        return date.toLocaleDateString();
+    } catch {
+        return '--';
+    }
+}
+
+// =============== EVENT LOGS ===============
+
+async function loadEventLogs() {
+    const timeFilter = document.getElementById('logs-time-filter').value;
+    const namespaceFilter = document.getElementById('logs-namespace-filter').value;
+    const hostnameFilter = document.getElementById('logs-hostname-filter').value;
+    const limit = parseInt(document.getElementById('logs-limit').value) || 100;
+
+    try {
+        if (eventBus && eventBus.connected) {
+            eventBus.send('get_logs', {
+                last: timeFilter,
+                namespace: namespaceFilter,
+                hostname: hostnameFilter,
+                limit: limit
+            });
+        }
+    } catch (error) {
+        console.error('Failed to load event logs:', error);
+    }
+}
+window.loadEventLogs = loadEventLogs;
+
+function renderEventLogs() {
+    const container = document.getElementById('logs-container');
+    if (!container) return;
+
+    if (!eventLogs || eventLogs.length === 0) {
+        container.innerHTML = `
+            <div style="text-align: center; color: #86868b; padding: 40px;">
+                No events found matching the filters.
+            </div>
+        `;
+        return;
+    }
+
+    const logsHTML = eventLogs.map(log => {
+        const timestamp = log.ts ? new Date(log.ts).toLocaleTimeString() : '--';
+        const hostname = log.hostname || '--';
+        const namespace = log.ns || '--';
+        const dataStr = log.data ? JSON.stringify(log.data) : '';
+
+        return `
+            <div class="log-entry">
+                <span class="log-timestamp">${timestamp}</span>
+                <span class="log-hostname">${hostname}</span>
+                <span class="log-namespace">${namespace}</span>
+                ${dataStr ? `<span class="log-data">${dataStr}</span>` : ''}
+            </div>
+        `;
+    }).join('');
+
+    container.innerHTML = logsHTML;
+}
+
+// =============== HOSTNAME TO IP MAPPING ===============
+
+function renderHostnameMapping() {
+    const container = document.getElementById('hostname-mapping-table');
+    if (!container) return;
+
+    const entries = Object.entries(hostnameToIP);
+
+    if (entries.length === 0) {
+        container.innerHTML = `
+            <p style="text-align: center; color: #86868b; padding: 20px;">
+                No hostname mappings available.
+            </p>
+        `;
+        return;
+    }
+
+    const tableHTML = `
+        <table>
+            <thead>
+                <tr>
+                    <th>Hostname</th>
+                    <th>VPN IP</th>
+                    <th>Version</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${entries.map(([hostname, vpnIP]) => {
+                    const version = clientVersions[vpnIP] || 'unknown';
+                    const shortVersion = version.length > 8 ? version.substring(0, 8) : version;
+                    return `
+                        <tr>
+                            <td>${hostname}</td>
+                            <td><code>${vpnIP}</code></td>
+                            <td><code>${shortVersion}</code></td>
+                        </tr>
+                    `;
+                }).join('')}
+            </tbody>
+        </table>
+    `;
+
+    container.innerHTML = tableHTML;
+}
+
+// =============== POPULATE CLIENT SELECTS ===============
+
+function populateClientSelects() {
+    // Get all client-related select elements
+    const selects = [
+        'update-target-select',
+        'rollback-target-select',
+        'logs-hostname-filter',
+        'stats-client-filter'
+    ];
+
+    // Build options from peers and hostnameToIP
+    const clientOptions = new Set();
+
+    // Add from peers
+    peers.forEach(peer => {
+        if (peer.vpn_address) {
+            clientOptions.add(peer.vpn_address);
+        }
+    });
+
+    // Add from hostnameToIP
+    Object.values(hostnameToIP).forEach(vpnIP => {
+        if (vpnIP) {
+            clientOptions.add(vpnIP);
+        }
+    });
+
+    // Add from clientVersions
+    Object.keys(clientVersions).forEach(vpnIP => {
+        if (vpnIP) {
+            clientOptions.add(vpnIP);
+        }
+    });
+
+    selects.forEach(selectId => {
+        const select = document.getElementById(selectId);
+        if (!select) return;
+
+        // Keep the first option (placeholder)
+        const firstOption = select.options[0];
+        select.innerHTML = '';
+        select.appendChild(firstOption);
+
+        // Add client options
+        [...clientOptions].sort().forEach(vpnIP => {
+            const option = document.createElement('option');
+            option.value = vpnIP;
+
+            // Try to find hostname for this IP
+            const hostname = Object.entries(hostnameToIP).find(([h, ip]) => ip === vpnIP)?.[0];
+            option.textContent = hostname ? `${hostname} (${vpnIP})` : vpnIP;
+
+            select.appendChild(option);
+        });
+    });
+}
 
 // =============== MOCK DATA GENERATORS ===============
 

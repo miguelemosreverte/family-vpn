@@ -71,6 +71,30 @@
 
                 <!-- Health Monitoring Dashboard -->
                 <div id="health-dashboard" class="dashboard active">
+                    <!-- Daemon Status Bar -->
+                    <div class="daemon-status-bar" id="daemon-status-bar">
+                        <div class="daemon-status-item">
+                            <span class="daemon-label">Daemon:</span>
+                            <span class="daemon-value" id="daemon-status">Checking...</span>
+                        </div>
+                        <div class="daemon-status-item">
+                            <span class="daemon-label">WebSocket:</span>
+                            <span class="daemon-value" id="daemon-ws-status">--</span>
+                        </div>
+                        <div class="daemon-status-item">
+                            <span class="daemon-label">Uptime:</span>
+                            <span class="daemon-value" id="daemon-uptime">--</span>
+                        </div>
+                        <div class="daemon-status-item">
+                            <span class="daemon-label">Reconnects:</span>
+                            <span class="daemon-value" id="daemon-reconnects">--</span>
+                        </div>
+                        <div class="daemon-status-item">
+                            <span class="daemon-label">Events (24h):</span>
+                            <span class="daemon-value" id="daemon-events">--</span>
+                        </div>
+                    </div>
+
                     <div class="metrics-grid">
                         <div class="metric-card">
                             <h3>Connected Clients</h3>
@@ -107,10 +131,106 @@
                         </div>
                     </div>
 
+                    <!-- Benchmark Section -->
+                    <div class="benchmark-section">
+                        <div class="section-header">
+                            <h3>Performance Benchmarks</h3>
+                            <button id="run-benchmark-btn" class="action-btn-small" onclick="runBenchmark()">Run Benchmark</button>
+                        </div>
+                        <div class="benchmark-grid" id="benchmark-grid">
+                            <div class="benchmark-card">
+                                <h4>Latency</h4>
+                                <div class="benchmark-value" id="benchmark-latency">--</div>
+                                <div class="benchmark-label">Average response time</div>
+                            </div>
+                            <div class="benchmark-card">
+                                <h4>Throughput</h4>
+                                <div class="benchmark-value" id="benchmark-throughput">--</div>
+                                <div class="benchmark-label">Events per second</div>
+                            </div>
+                            <div class="benchmark-card">
+                                <h4>Last Run</h4>
+                                <div class="benchmark-value" id="benchmark-last-run">Never</div>
+                                <div class="benchmark-label" id="benchmark-status">--</div>
+                            </div>
+                        </div>
+                        <div class="timeseries-charts">
+                            <div class="chart-card">
+                                <h4>Latency Time Series</h4>
+                                <div class="timeseries-controls">
+                                    <select id="latency-timeseries-range" onchange="loadLatencyTimeSeries()">
+                                        <option value="1h">Last Hour</option>
+                                        <option value="6h">Last 6 Hours</option>
+                                        <option value="24h" selected>Last 24 Hours</option>
+                                    </select>
+                                </div>
+                                <canvas id="latency-timeseries-chart"></canvas>
+                            </div>
+                            <div class="chart-card">
+                                <h4>Throughput Time Series</h4>
+                                <div class="timeseries-controls">
+                                    <select id="throughput-timeseries-range" onchange="loadThroughputTimeSeries()">
+                                        <option value="1h">Last Hour</option>
+                                        <option value="6h">Last 6 Hours</option>
+                                        <option value="24h" selected>Last 24 Hours</option>
+                                    </select>
+                                </div>
+                                <canvas id="throughput-timeseries-chart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Client Statistics Section -->
+                    <div class="client-stats-section">
+                        <div class="section-header">
+                            <h3>Client Statistics</h3>
+                            <select id="stats-client-filter" onchange="loadClientStats()">
+                                <option value="">All Clients</option>
+                                <!-- Options populated dynamically -->
+                            </select>
+                        </div>
+                        <div id="client-stats-grid" class="client-stats-grid">
+                            <!-- Client stats cards will be inserted here -->
+                        </div>
+                    </div>
+
                     <div class="peers-status">
                         <h3>Client Status</h3>
                         <div id="peers-status-grid" class="peers-grid">
                             <!-- Peer status cards will be inserted here -->
+                        </div>
+                    </div>
+
+                    <!-- Event Logs Section -->
+                    <div class="logs-section">
+                        <div class="section-header">
+                            <h3>Event Logs</h3>
+                            <div class="logs-controls">
+                                <select id="logs-time-filter" onchange="loadEventLogs()">
+                                    <option value="30m">Last 30 minutes</option>
+                                    <option value="1h">Last hour</option>
+                                    <option value="2h" selected>Last 2 hours</option>
+                                    <option value="6h">Last 6 hours</option>
+                                    <option value="24h">Last 24 hours</option>
+                                </select>
+                                <select id="logs-namespace-filter" onchange="loadEventLogs()">
+                                    <option value="">All Namespaces</option>
+                                    <option value="versions">versions.*</option>
+                                    <option value="health">health.*</option>
+                                    <option value="system">system.*</option>
+                                    <option value="updates">updates.*</option>
+                                    <option value="peers">peers.*</option>
+                                    <option value="benchmark">benchmark.*</option>
+                                </select>
+                                <select id="logs-hostname-filter" onchange="loadEventLogs()">
+                                    <option value="">All Clients</option>
+                                    <!-- Options populated dynamically -->
+                                </select>
+                                <input type="number" id="logs-limit" value="100" min="10" max="500" onchange="loadEventLogs()" title="Max entries">
+                            </div>
+                        </div>
+                        <div id="logs-container" class="logs-container">
+                            <!-- Event logs will be inserted here -->
                         </div>
                     </div>
 
@@ -160,30 +280,83 @@
                             <div class="version-value" id="server-version">
                                 <code>Loading...</code>
                             </div>
+                            <div class="version-meta" id="server-version-meta"></div>
                         </div>
                         <div class="version-card">
                             <h3>Deployment Status</h3>
                             <div class="deployment-stats" id="deployment-stats">
                                 <div class="stat-item">
                                     <span class="stat-label">Up to date:</span>
-                                    <span class="stat-value" id="up-to-date-count">0</span>
+                                    <span class="stat-value status-healthy" id="up-to-date-count">0</span>
                                 </div>
                                 <div class="stat-item">
                                     <span class="stat-label">Updating:</span>
-                                    <span class="stat-value" id="updating-count">0</span>
+                                    <span class="stat-value status-updating" id="updating-count">0</span>
                                 </div>
                                 <div class="stat-item">
                                     <span class="stat-label">Behind:</span>
-                                    <span class="stat-value" id="behind-count">0</span>
+                                    <span class="stat-value status-behind" id="behind-count">0</span>
                                 </div>
                             </div>
                         </div>
-                        <div class="version-card">
-                            <h3>Actions</h3>
-                            <button id="update-all-btn" class="action-btn" onclick="triggerUpdateAll()">
-                                Update All Clients
+                        <div class="version-card actions-card">
+                            <h3>Update Actions</h3>
+                            <div class="action-buttons">
+                                <button id="update-all-btn" class="action-btn primary" onclick="triggerUpdateAll()">
+                                    Update All Clients
+                                </button>
+                                <button id="sync-versions-btn" class="action-btn secondary" onclick="syncVersions()">
+                                    Sync Versions
+                                </button>
+                            </div>
+                            <div id="update-status" class="action-status"></div>
+                        </div>
+                    </div>
+
+                    <!-- Targeted Update Section -->
+                    <div class="targeted-update-section">
+                        <div class="section-header">
+                            <h3>Targeted Update</h3>
+                        </div>
+                        <div class="targeted-update-form">
+                            <div class="form-group">
+                                <label for="update-target-select">Target Client:</label>
+                                <select id="update-target-select">
+                                    <option value="">Select a client...</option>
+                                    <!-- Options populated dynamically -->
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="update-version-input">Version (optional):</label>
+                                <input type="text" id="update-version-input" placeholder="Leave empty for latest">
+                            </div>
+                            <button id="targeted-update-btn" class="action-btn" onclick="triggerTargetedUpdate()">
+                                Update Selected Client
                             </button>
-                            <div id="update-status" style="margin-top: 8px; font-size: 12px; color: #86868b;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Rollback Section -->
+                    <div class="rollback-section">
+                        <div class="section-header">
+                            <h3>Rollback</h3>
+                        </div>
+                        <div class="rollback-form">
+                            <div class="form-group">
+                                <label for="rollback-target-select">Target Client:</label>
+                                <select id="rollback-target-select">
+                                    <option value="">Select a client...</option>
+                                    <!-- Options populated dynamically -->
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="rollback-commit-input">Rollback to Commit:</label>
+                                <input type="text" id="rollback-commit-input" placeholder="Enter commit hash (required)">
+                            </div>
+                            <button id="rollback-btn" class="action-btn danger" onclick="triggerRollback()">
+                                Rollback Client
+                            </button>
+                            <div id="rollback-status" class="action-status"></div>
                         </div>
                     </div>
 
@@ -193,9 +366,24 @@
                     </div>
 
                     <div class="clients-version">
-                        <h3>Client Versions</h3>
+                        <div class="section-header">
+                            <h3>Client Versions</h3>
+                            <div class="version-controls">
+                                <button class="action-btn-small" onclick="refreshVersions()">Refresh</button>
+                            </div>
+                        </div>
                         <div id="clients-version-table" class="version-table">
                             <!-- Client version table will be inserted here -->
+                        </div>
+                    </div>
+
+                    <!-- Hostname to IP Mapping -->
+                    <div class="hostname-mapping-section">
+                        <div class="section-header">
+                            <h3>Hostname to IP Mapping</h3>
+                        </div>
+                        <div id="hostname-mapping-table" class="mapping-table">
+                            <!-- Hostname mapping will be inserted here -->
                         </div>
                     </div>
                 </div>
