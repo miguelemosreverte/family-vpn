@@ -10,14 +10,19 @@
 //
 // The CLI connects to the VPN server's WebSocket endpoint and displays events.
 // This is the foundation for UI components - the UI uses the same protocol.
+//
+// FAST MODE: If eventbus-daemon is running, the CLI communicates via Unix socket
+// for instant responses. Otherwise, it falls back to direct WebSocket connection.
 
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/url"
 	"os"
 	"os/signal"
@@ -25,6 +30,58 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+const daemonSocket = "/tmp/family-vpn-eventbus.sock"
+
+// CLIRequest is sent to daemon
+type CLIRequest struct {
+	Command string                 `json:"cmd"`
+	Args    map[string]interface{} `json:"args,omitempty"`
+}
+
+// CLIResponse from daemon
+type CLIResponse struct {
+	Success bool        `json:"success"`
+	Data    interface{} `json:"data,omitempty"`
+	Error   string      `json:"error,omitempty"`
+}
+
+// sendToDaemon sends a command to the daemon and returns the response
+func sendToDaemon(req CLIRequest) (*CLIResponse, error) {
+	conn, err := net.DialTimeout("unix", daemonSocket, 2*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	// Send request
+	data, _ := json.Marshal(req)
+	conn.Write(append(data, '\n'))
+
+	// Read response
+	reader := bufio.NewReader(conn)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+
+	var resp CLIResponse
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
+}
+
+// isDaemonRunning checks if the daemon is running
+func isDaemonRunning() bool {
+	conn, err := net.DialTimeout("unix", daemonSocket, 100*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
 
 var (
 	serverURL = flag.String("server", "ws://10.8.0.1:9000/ws", "WebSocket server URL")
@@ -215,6 +272,36 @@ func cmdSnapshot() {
 }
 
 func cmdVersions() {
+	// Try daemon first for fast response
+	if isDaemonRunning() {
+		resp, err := sendToDaemon(CLIRequest{Command: "versions"})
+		if err == nil && resp.Success {
+			fmt.Println("=== Client Versions === (via daemon)")
+			if data, ok := resp.Data.(map[string]interface{}); ok {
+				if versions, ok := data["versions"].(map[string]interface{}); ok {
+					if len(versions) == 0 {
+						fmt.Println("No clients connected")
+					}
+					for ip, commit := range versions {
+						commitStr, _ := commit.(string)
+						if len(commitStr) > 8 {
+							commitStr = commitStr[:8]
+						}
+						fmt.Printf("  %s: %s\n", ip, commitStr)
+					}
+				}
+				if serverVersion, ok := data["server_version"].(string); ok && serverVersion != "" {
+					if len(serverVersion) > 8 {
+						serverVersion = serverVersion[:8]
+					}
+					fmt.Printf("\nServer: %s\n", serverVersion)
+				}
+			}
+			return
+		}
+	}
+
+	// Fall back to direct WebSocket
 	conn, err := connectWebSocket()
 	if err != nil {
 		log.Fatalf("Connection failed: %v", err)
@@ -403,6 +490,37 @@ func cmdPingHistory() {
 }
 
 func cmdUpdate(targets []string, toVersion string) {
+	// Try daemon first
+	if isDaemonRunning() {
+		targetsInterface := make([]interface{}, len(targets))
+		for i, t := range targets {
+			targetsInterface[i] = t
+		}
+		resp, err := sendToDaemon(CLIRequest{
+			Command: "update",
+			Args: map[string]interface{}{
+				"targets": targetsInterface,
+				"version": toVersion,
+			},
+		})
+		if err == nil && resp.Success {
+			fmt.Println("=== Update Event Broadcast === (via daemon)")
+			if len(targets) == 1 && targets[0] == "all" {
+				fmt.Println("Target: All connected clients")
+			} else {
+				fmt.Printf("Targets: %v\n", targets)
+			}
+			if toVersion != "" {
+				fmt.Printf("Version: %s\n", toVersion)
+			} else {
+				fmt.Println("Version: latest")
+			}
+			fmt.Println("\nClients will pull and update autonomously.")
+			return
+		}
+	}
+
+	// Fall back to direct WebSocket
 	conn, err := connectWebSocket()
 	if err != nil {
 		log.Fatalf("Connection failed: %v", err)
@@ -524,6 +642,51 @@ func cmdPeers() {
 
 var toVersion = flag.String("to", "", "Target version/commit for rollback")
 
+func cmdStatus() {
+	if !isDaemonRunning() {
+		fmt.Println("=== Daemon Status ===")
+		fmt.Println("Status: NOT RUNNING")
+		fmt.Println("\nStart the daemon with:")
+		fmt.Println("  eventbus-daemon &")
+		return
+	}
+
+	resp, err := sendToDaemon(CLIRequest{Command: "status"})
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	fmt.Println("=== Daemon Status ===")
+	if !resp.Success {
+		fmt.Printf("Error: %s\n", resp.Error)
+		return
+	}
+
+	if data, ok := resp.Data.(map[string]interface{}); ok {
+		connected, _ := data["connected"].(bool)
+		hostname, _ := data["hostname"].(string)
+		vpnIP, _ := data["vpn_ip"].(string)
+		gitCommit, _ := data["git_commit"].(string)
+		reconnects, _ := data["reconnects"].(float64)
+		peerCount, _ := data["peer_count"].(float64)
+		versionCount, _ := data["version_count"].(float64)
+
+		status := "DISCONNECTED"
+		if connected {
+			status = "CONNECTED"
+		}
+
+		fmt.Printf("Status: %s\n", status)
+		fmt.Printf("Hostname: %s\n", hostname)
+		fmt.Printf("VPN IP: %s\n", vpnIP)
+		fmt.Printf("Git Commit: %s\n", gitCommit)
+		fmt.Printf("Reconnects: %d\n", int(reconnects))
+		fmt.Printf("Cached Peers: %d\n", int(peerCount))
+		fmt.Printf("Cached Versions: %d\n", int(versionCount))
+	}
+}
+
 func printUsage() {
 	fmt.Println(`eventbus-cli - Event Bus CLI for Family VPN
 
@@ -531,6 +694,7 @@ Usage:
   eventbus-cli [flags] <command> [args...]
 
 Commands:
+  status                    Show daemon status
   versions                  Get all client versions
   peers                     List connected peers
   update <target>           Trigger update on client(s)
@@ -580,6 +744,9 @@ func main() {
 	command := args[0]
 
 	switch command {
+	case "status":
+		cmdStatus()
+
 	case "subscribe":
 		if len(args) < 2 {
 			fmt.Println("Error: subscribe requires at least one pattern")

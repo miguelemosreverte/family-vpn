@@ -116,3 +116,55 @@ Server: Reachable (45ms)
 | Process not running | Check watchdog, restart manually |
 | VPN tunnel down | Check client log, reconnect |
 | High latency | Check network, server load |
+
+## SSH Access Methods
+
+### 1. Via VPN (Primary)
+
+When VPN is connected, SSH directly to the VPN IP:
+```bash
+ssh miguel_lemos@10.8.0.3
+```
+
+### 2. Via Local Wi-Fi (Fallback)
+
+When VPN SSH fails (timeout, routing issues, or VPN being configured), use local network access:
+
+**Step 1: Discover machines on local network via mDNS**
+```bash
+# List SSH-enabled devices on local network
+dns-sd -B _ssh._tcp local.
+```
+
+Example output:
+```
+Browsing for _ssh._tcp.local.
+DATE: ---Sat 30 Nov 2025---
+17:05:07.123  ...DIFFERING NAMES.  PTR MacBook Air — Anastasiia._ssh._tcp.local.
+17:05:07.124  ...DIFFERING NAMES.  PTR miguel-lemoss-Mac-mini._ssh._tcp.local.
+```
+
+**Step 2: SSH using the mDNS hostname**
+```bash
+# Format: username@hostname.local
+ssh anastasiia@MacBook-Air-Anastasiia.local
+ssh miguel_lemos@miguel-lemoss-Mac-mini.local
+```
+
+**Note**: The mDNS hostname replaces spaces with hyphens and adds `.local` suffix.
+
+### When to Use Wi-Fi Fallback
+
+- VPN tunnel not established yet (initial setup)
+- VPN connection is being reconfigured
+- VPN SSH times out (`Operation timed out`)
+- Development/debugging when VPN routes are broken
+- Emergency access when VPN server is down
+
+### Known Machine Hostnames
+
+| User | VPN IP | Local Hostname |
+|------|--------|----------------|
+| Miguel (MacBook Air) | 10.8.0.6 | Miguels-MacBook-Air.local |
+| Miguel (Mac mini) | 10.8.0.4 | miguel-lemoss-Mac-mini.local |
+| Anastasiia | 10.8.0.3 | MacBook-Air-Anastasiia.local |
