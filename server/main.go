@@ -885,6 +885,12 @@ func (s *VPNServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		s.wsClientsMutex.Lock()
 		delete(s.wsClients, vpnIP)
 		s.wsClientsMutex.Unlock()
+
+		// Clean up client version on disconnect
+		s.clientVersionsMutex.Lock()
+		delete(s.clientVersions, vpnIP)
+		s.clientVersionsMutex.Unlock()
+
 		conn.Close()
 		log.Printf("[WS] Client %s disconnected from WebSocket", vpnIP)
 
