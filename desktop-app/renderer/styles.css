@@ -1433,6 +1433,51 @@ body.dark-mode .mapping-table code {
     display: none;
 }
 
+/* =============== NOTIFICATIONS =============== */
+
+#notification-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 10000;
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+@keyframes slideOut {
+    from {
+        transform: translateX(0);
+        opacity: 1;
+    }
+    to {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+}
+
+/* =============== LOADING =============== */
+
+.loading-message {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 200px;
+    color: #86868b;
+}
+
+.error-message {
+    color: #ff3b30;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
     width: 8px;

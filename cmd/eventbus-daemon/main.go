@@ -51,6 +51,18 @@ const (
 	pongTimeout      = 90 * time.Second
 	maxEventHistory  = 10000            // Max events to keep in memory
 	eventRetention   = 24 * time.Hour   // Keep events for 24 hours
+
+	// Time Series Configuration - ~50MB memory budget
+	// Each data point ~100 bytes, budget for ~500K points total
+	tsLatencyBucketSize    = 5 * time.Minute   // Aggregate latency every 5 min
+	tsThroughputBucketSize = 15 * time.Minute  // Aggregate throughput every 15 min
+	tsMaxLatencyPoints     = 288 * 7           // 7 days at 5min buckets = 2016 points
+	tsMaxThroughputPoints  = 96 * 7            // 7 days at 15min buckets = 672 points
+
+	// Benchmark Configuration
+	benchmarkInterval      = 1 * time.Hour     // Run benchmark every hour
+	benchmarkIdleThreshold = 30 * time.Second  // Only run if no traffic for 30s
+	benchmarkPayloadSizes  = "64,512,1024,4096" // Payload sizes to test (bytes)
 )
 
 // Daemon holds the daemon state
@@ -79,6 +91,13 @@ type Daemon struct {
 	clientStats map[string]*ClientStats // hostname -> stats
 	startedAt   time.Time               // When daemon started
 
+	// Time Series Storage (memory-efficient bucketed data)
+	latencySeries    *TimeSeries // Latency measurements
+	throughputSeries *TimeSeries // Throughput measurements
+	lastTrafficTime  time.Time   // Last time traffic was detected
+	lastBenchmarkAt  time.Time   // Last benchmark run time
+	benchmarkRunning bool        // Prevent concurrent benchmarks
+
 	// Local info
 	hostname  string
 	vpnIP     string
@@ -88,6 +107,41 @@ type Daemon struct {
 	// Control
 	shutdown chan struct{}
 	logger   *log.Logger
+}
+
+// TimeSeries stores time-bucketed metrics with automatic aggregation
+type TimeSeries struct {
+	mu         sync.RWMutex
+	bucketSize time.Duration
+	maxPoints  int
+	points     []TimeSeriesPoint
+	name       string
+}
+
+// TimeSeriesPoint represents an aggregated data point
+type TimeSeriesPoint struct {
+	Timestamp time.Time `json:"ts"`
+	Min       float64   `json:"min"`
+	Max       float64   `json:"max"`
+	Avg       float64   `json:"avg"`
+	Count     int       `json:"count"`
+	Sum       float64   `json:"sum"`
+	P50       float64   `json:"p50,omitempty"` // Median
+	P95       float64   `json:"p95,omitempty"` // 95th percentile
+	P99       float64   `json:"p99,omitempty"` // 99th percentile
+}
+
+// BenchmarkResult stores results of a latency/throughput test
+type BenchmarkResult struct {
+	Timestamp      time.Time              `json:"timestamp"`
+	Target         string                 `json:"target"`          // "server" or peer hostname
+	LatencyMs      float64                `json:"latency_ms"`      // Round-trip time
+	ThroughputMbps float64                `json:"throughput_mbps"` // Megabits per second
+	PacketLoss     float64                `json:"packet_loss"`     // 0.0 - 1.0
+	Jitter         float64                `json:"jitter_ms"`       // Latency variation
+	PayloadSize    int                    `json:"payload_size"`    // Bytes tested
+	Samples        int                    `json:"samples"`         // Number of measurements
+	Details        map[string]interface{} `json:"details,omitempty"`
 }
 
 // Peer represents a connected VPN peer
@@ -166,13 +220,16 @@ func main() {
 	}
 
 	daemon := &Daemon{
-		versions:     make(map[string]string),
-		hostnameToIP: make(map[string]string),
-		eventHistory: make([]EventRecord, 0, maxEventHistory),
-		clientStats:  make(map[string]*ClientStats),
-		startedAt:    time.Now(),
-		shutdown:     make(chan struct{}),
-		logger:       logger,
+		versions:         make(map[string]string),
+		hostnameToIP:     make(map[string]string),
+		eventHistory:     make([]EventRecord, 0, maxEventHistory),
+		clientStats:      make(map[string]*ClientStats),
+		latencySeries:    NewTimeSeries("latency", tsLatencyBucketSize, tsMaxLatencyPoints),
+		throughputSeries: NewTimeSeries("throughput", tsThroughputBucketSize, tsMaxThroughputPoints),
+		lastTrafficTime:  time.Now(),
+		startedAt:        time.Now(),
+		shutdown:         make(chan struct{}),
+		logger:           logger,
 	}
 
 	// Get local info
@@ -203,6 +260,9 @@ func main() {
 
 	// Start WebSocket connection (with reconnect)
 	go daemon.wsConnectionLoop()
+
+	// Start benchmark scheduler (runs hourly when idle)
+	go daemon.benchmarkScheduler()
 
 	// Wait for shutdown
 	<-daemon.shutdown
@@ -331,6 +391,10 @@ func (d *Daemon) handleCommand(req CLIRequest) CLIResponse {
 		return d.cmdStats(req.Args)
 	case "health":
 		return d.cmdHealth(req.Args)
+	case "benchmark":
+		return d.cmdBenchmark(req.Args)
+	case "timeseries":
+		return d.cmdTimeSeries(req.Args)
 	default:
 		return CLIResponse{Success: false, Error: "unknown command: " + req.Command}
 	}
@@ -1305,4 +1369,548 @@ func getRepoPath() string {
 	}
 
 	return ""
+}
+
+// ============================================================================
+// Time Series Implementation
+// ============================================================================
+
+// NewTimeSeries creates a new time series with the given bucket size and max points
+func NewTimeSeries(name string, bucketSize time.Duration, maxPoints int) *TimeSeries {
+	return &TimeSeries{
+		name:       name,
+		bucketSize: bucketSize,
+		maxPoints:  maxPoints,
+		points:     make([]TimeSeriesPoint, 0, maxPoints),
+	}
+}
+
+// Add adds a value to the time series, aggregating into the current bucket
+func (ts *TimeSeries) Add(value float64) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	now := time.Now()
+	bucketTime := now.Truncate(ts.bucketSize)
+
+	// Check if we can add to the current bucket
+	if len(ts.points) > 0 {
+		lastIdx := len(ts.points) - 1
+		if ts.points[lastIdx].Timestamp.Equal(bucketTime) {
+			// Update existing bucket
+			p := &ts.points[lastIdx]
+			p.Count++
+			p.Sum += value
+			p.Avg = p.Sum / float64(p.Count)
+			if value < p.Min {
+				p.Min = value
+			}
+			if value > p.Max {
+				p.Max = value
+			}
+			return
+		}
+	}
+
+	// Create new bucket
+	newPoint := TimeSeriesPoint{
+		Timestamp: bucketTime,
+		Min:       value,
+		Max:       value,
+		Avg:       value,
+		Sum:       value,
+		Count:     1,
+	}
+
+	// Enforce max points limit
+	if len(ts.points) >= ts.maxPoints {
+		// Remove oldest point
+		ts.points = ts.points[1:]
+	}
+
+	ts.points = append(ts.points, newPoint)
+}
+
+// AddWithPercentiles adds a value and updates percentile calculations
+func (ts *TimeSeries) AddWithPercentiles(values []float64) {
+	if len(values) == 0 {
+		return
+	}
+
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	now := time.Now()
+	bucketTime := now.Truncate(ts.bucketSize)
+
+	// Calculate statistics
+	var sum, min, max float64
+	min = values[0]
+	max = values[0]
+	for _, v := range values {
+		sum += v
+		if v < min {
+			min = v
+		}
+		if v > max {
+			max = v
+		}
+	}
+	avg := sum / float64(len(values))
+
+	// Sort for percentiles
+	sorted := make([]float64, len(values))
+	copy(sorted, values)
+	sortFloat64s(sorted)
+
+	p50 := percentile(sorted, 50)
+	p95 := percentile(sorted, 95)
+	p99 := percentile(sorted, 99)
+
+	newPoint := TimeSeriesPoint{
+		Timestamp: bucketTime,
+		Min:       min,
+		Max:       max,
+		Avg:       avg,
+		Sum:       sum,
+		Count:     len(values),
+		P50:       p50,
+		P95:       p95,
+		P99:       p99,
+	}
+
+	// Enforce max points limit
+	if len(ts.points) >= ts.maxPoints {
+		ts.points = ts.points[1:]
+	}
+
+	ts.points = append(ts.points, newPoint)
+}
+
+// GetPoints returns all points in the time series
+func (ts *TimeSeries) GetPoints() []TimeSeriesPoint {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+
+	result := make([]TimeSeriesPoint, len(ts.points))
+	copy(result, ts.points)
+	return result
+}
+
+// GetPointsSince returns points since a given time
+func (ts *TimeSeries) GetPointsSince(since time.Time) []TimeSeriesPoint {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+
+	var result []TimeSeriesPoint
+	for _, p := range ts.points {
+		if p.Timestamp.After(since) || p.Timestamp.Equal(since) {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// GetLatest returns the most recent point
+func (ts *TimeSeries) GetLatest() *TimeSeriesPoint {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+
+	if len(ts.points) == 0 {
+		return nil
+	}
+	p := ts.points[len(ts.points)-1]
+	return &p
+}
+
+// MemoryUsage returns estimated memory usage in bytes
+func (ts *TimeSeries) MemoryUsage() int {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	// Each point is roughly 100 bytes (timestamps, floats, etc.)
+	return len(ts.points) * 100
+}
+
+// Helper: sort float64 slice
+func sortFloat64s(a []float64) {
+	for i := 0; i < len(a)-1; i++ {
+		for j := i + 1; j < len(a); j++ {
+			if a[i] > a[j] {
+				a[i], a[j] = a[j], a[i]
+			}
+		}
+	}
+}
+
+// Helper: calculate percentile from sorted slice
+func percentile(sorted []float64, p int) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	idx := int(float64(len(sorted)-1) * float64(p) / 100.0)
+	return sorted[idx]
+}
+
+// ============================================================================
+// Benchmark System
+// ============================================================================
+
+// benchmarkScheduler runs benchmarks hourly when idle
+func (d *Daemon) benchmarkScheduler() {
+	ticker := time.NewTicker(1 * time.Minute) // Check every minute
+	defer ticker.Stop()
+
+	d.logger.Println("[BENCHMARK] Scheduler started (runs hourly when idle)")
+
+	for {
+		select {
+		case <-d.shutdown:
+			return
+		case <-ticker.C:
+			d.checkAndRunBenchmark()
+		}
+	}
+}
+
+// checkAndRunBenchmark checks if conditions are met to run a benchmark
+func (d *Daemon) checkAndRunBenchmark() {
+	d.mu.Lock()
+	// Check if benchmark is already running
+	if d.benchmarkRunning {
+		d.mu.Unlock()
+		return
+	}
+
+	// Check if enough time has passed since last benchmark
+	if time.Since(d.lastBenchmarkAt) < benchmarkInterval {
+		d.mu.Unlock()
+		return
+	}
+
+	// Check if system is idle (no traffic for threshold period)
+	if time.Since(d.lastTrafficTime) < benchmarkIdleThreshold {
+		d.mu.Unlock()
+		return
+	}
+
+	// Check if we're connected
+	if !d.connected {
+		d.mu.Unlock()
+		return
+	}
+
+	d.benchmarkRunning = true
+	d.mu.Unlock()
+
+	// Run benchmark in background
+	go func() {
+		d.runBenchmark()
+
+		d.mu.Lock()
+		d.benchmarkRunning = false
+		d.lastBenchmarkAt = time.Now()
+		d.mu.Unlock()
+	}()
+}
+
+// runBenchmark executes latency and throughput tests
+func (d *Daemon) runBenchmark() {
+	d.logger.Println("[BENCHMARK] Starting benchmark run...")
+
+	results := []BenchmarkResult{}
+
+	// Test 1: Latency to VPN server (10.8.0.1)
+	latencyResult := d.measureLatency("10.8.0.1", 10) // 10 samples
+	if latencyResult != nil {
+		results = append(results, *latencyResult)
+		d.latencySeries.Add(latencyResult.LatencyMs)
+	}
+
+	// Test 2: Throughput test (simple WebSocket echo)
+	throughputResult := d.measureThroughput("10.8.0.1", 4096, 5) // 4KB payload, 5 samples
+	if throughputResult != nil {
+		results = append(results, *throughputResult)
+		d.throughputSeries.Add(throughputResult.ThroughputMbps)
+	}
+
+	// Publish benchmark results as event
+	if len(results) > 0 {
+		d.sendWSMessage(map[string]interface{}{
+			"ns": "benchmark.completed",
+			"ts": time.Now().UnixMilli(),
+			"data": map[string]interface{}{
+				"hostname": d.hostname,
+				"results":  results,
+			},
+		})
+
+		d.recordEvent("benchmark.completed", d.hostname, map[string]interface{}{
+			"result_count": len(results),
+		})
+	}
+
+	d.logger.Printf("[BENCHMARK] Completed with %d results", len(results))
+}
+
+// measureLatency measures round-trip latency using ping
+func (d *Daemon) measureLatency(target string, samples int) *BenchmarkResult {
+	latencies := make([]float64, 0, samples)
+
+	for i := 0; i < samples; i++ {
+		start := time.Now()
+
+		// Use ping command for accurate latency
+		cmd := exec.Command("ping", "-c", "1", "-W", "1", target)
+		if err := cmd.Run(); err != nil {
+			continue
+		}
+
+		latency := time.Since(start).Seconds() * 1000 // Convert to ms
+		latencies = append(latencies, latency)
+
+		time.Sleep(100 * time.Millisecond) // Small delay between samples
+	}
+
+	if len(latencies) == 0 {
+		return nil
+	}
+
+	// Calculate statistics
+	var sum, min, max float64
+	min = latencies[0]
+	max = latencies[0]
+	for _, l := range latencies {
+		sum += l
+		if l < min {
+			min = l
+		}
+		if l > max {
+			max = l
+		}
+	}
+	avg := sum / float64(len(latencies))
+
+	// Calculate jitter (variation in latency)
+	var jitterSum float64
+	for _, l := range latencies {
+		diff := l - avg
+		if diff < 0 {
+			diff = -diff
+		}
+		jitterSum += diff
+	}
+	jitter := jitterSum / float64(len(latencies))
+
+	packetLoss := float64(samples-len(latencies)) / float64(samples)
+
+	return &BenchmarkResult{
+		Timestamp:      time.Now(),
+		Target:         target,
+		LatencyMs:      avg,
+		PacketLoss:     packetLoss,
+		Jitter:         jitter,
+		Samples:        len(latencies),
+		PayloadSize:    64, // ICMP ping default
+		ThroughputMbps: 0,  // Not applicable for latency test
+		Details: map[string]interface{}{
+			"min_ms": min,
+			"max_ms": max,
+			"avg_ms": avg,
+		},
+	}
+}
+
+// measureThroughput measures data transfer speed via WebSocket
+func (d *Daemon) measureThroughput(target string, payloadSize int, samples int) *BenchmarkResult {
+	throughputs := make([]float64, 0, samples)
+
+	// Create test payload
+	payload := make([]byte, payloadSize)
+	for i := range payload {
+		payload[i] = byte(i % 256)
+	}
+
+	for i := 0; i < samples; i++ {
+		// Measure time to send/receive via WebSocket
+		start := time.Now()
+
+		// Send benchmark ping through WebSocket
+		err := d.sendWSMessage(map[string]interface{}{
+			"type":      "benchmark_ping",
+			"timestamp": start.UnixNano(),
+			"size":      payloadSize,
+		})
+		if err != nil {
+			continue
+		}
+
+		// Approximate throughput (actual measurement would need echo response)
+		elapsed := time.Since(start).Seconds()
+		if elapsed > 0 {
+			// Calculate Mbps: (bytes * 8) / (seconds * 1000000)
+			mbps := float64(payloadSize*8) / (elapsed * 1000000)
+			throughputs = append(throughputs, mbps)
+		}
+
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	if len(throughputs) == 0 {
+		return nil
+	}
+
+	// Calculate average throughput
+	var sum float64
+	for _, t := range throughputs {
+		sum += t
+	}
+	avg := sum / float64(len(throughputs))
+
+	return &BenchmarkResult{
+		Timestamp:      time.Now(),
+		Target:         target,
+		ThroughputMbps: avg,
+		PayloadSize:    payloadSize,
+		Samples:        len(throughputs),
+		LatencyMs:      0,
+		PacketLoss:     float64(samples-len(throughputs)) / float64(samples),
+		Details: map[string]interface{}{
+			"payload_bytes": payloadSize,
+			"method":        "websocket",
+		},
+	}
+}
+
+// updateTrafficTime should be called whenever traffic is detected
+func (d *Daemon) updateTrafficTime() {
+	d.mu.Lock()
+	d.lastTrafficTime = time.Now()
+	d.mu.Unlock()
+}
+
+// ============================================================================
+// Benchmark CLI Handlers
+// ============================================================================
+
+// cmdBenchmark handles the benchmark CLI command
+func (d *Daemon) cmdBenchmark(args map[string]interface{}) CLIResponse {
+	action, _ := args["action"].(string)
+
+	switch action {
+	case "run":
+		// Manually trigger a benchmark
+		d.mu.Lock()
+		if d.benchmarkRunning {
+			d.mu.Unlock()
+			return CLIResponse{Success: false, Error: "benchmark already running"}
+		}
+		d.benchmarkRunning = true
+		d.mu.Unlock()
+
+		go func() {
+			d.runBenchmark()
+			d.mu.Lock()
+			d.benchmarkRunning = false
+			d.lastBenchmarkAt = time.Now()
+			d.mu.Unlock()
+		}()
+
+		return CLIResponse{
+			Success: true,
+			Data:    map[string]string{"message": "Benchmark started"},
+		}
+
+	case "status":
+		d.mu.RLock()
+		status := map[string]interface{}{
+			"running":        d.benchmarkRunning,
+			"last_run":       d.lastBenchmarkAt.Format(time.RFC3339),
+			"next_eligible":  d.lastBenchmarkAt.Add(benchmarkInterval).Format(time.RFC3339),
+			"idle_threshold": benchmarkIdleThreshold.String(),
+			"interval":       benchmarkInterval.String(),
+		}
+		d.mu.RUnlock()
+		return CLIResponse{Success: true, Data: status}
+
+	case "latest":
+		// Return latest benchmark results from time series
+		latencyLatest := d.latencySeries.GetLatest()
+		throughputLatest := d.throughputSeries.GetLatest()
+
+		data := map[string]interface{}{
+			"latency":    latencyLatest,
+			"throughput": throughputLatest,
+		}
+		return CLIResponse{Success: true, Data: data}
+
+	default:
+		// Default: return summary
+		d.mu.RLock()
+		summary := map[string]interface{}{
+			"running":              d.benchmarkRunning,
+			"last_run":             d.lastBenchmarkAt.Format(time.RFC3339),
+			"latency_points":       len(d.latencySeries.GetPoints()),
+			"throughput_points":    len(d.throughputSeries.GetPoints()),
+			"latency_memory_kb":    d.latencySeries.MemoryUsage() / 1024,
+			"throughput_memory_kb": d.throughputSeries.MemoryUsage() / 1024,
+		}
+		d.mu.RUnlock()
+		return CLIResponse{Success: true, Data: summary}
+	}
+}
+
+// cmdTimeSeries handles the timeseries CLI command
+func (d *Daemon) cmdTimeSeries(args map[string]interface{}) CLIResponse {
+	series, _ := args["series"].(string)
+	lastStr, _ := args["last"].(string)
+
+	// Determine which series to query
+	var ts *TimeSeries
+	switch series {
+	case "latency":
+		ts = d.latencySeries
+	case "throughput":
+		ts = d.throughputSeries
+	default:
+		// Return both series summary
+		return CLIResponse{
+			Success: true,
+			Data: map[string]interface{}{
+				"latency": map[string]interface{}{
+					"name":       "latency",
+					"points":     len(d.latencySeries.GetPoints()),
+					"bucket_size": tsLatencyBucketSize.String(),
+					"max_points": tsMaxLatencyPoints,
+					"memory_kb":  d.latencySeries.MemoryUsage() / 1024,
+				},
+				"throughput": map[string]interface{}{
+					"name":       "throughput",
+					"points":     len(d.throughputSeries.GetPoints()),
+					"bucket_size": tsThroughputBucketSize.String(),
+					"max_points": tsMaxThroughputPoints,
+					"memory_kb":  d.throughputSeries.MemoryUsage() / 1024,
+				},
+				"total_memory_kb": (d.latencySeries.MemoryUsage() + d.throughputSeries.MemoryUsage()) / 1024,
+			},
+		}
+	}
+
+	// Get points, optionally filtered by time
+	var points []TimeSeriesPoint
+	if lastStr != "" {
+		since := parseLastDuration(lastStr)
+		points = ts.GetPointsSince(since)
+	} else {
+		points = ts.GetPoints()
+	}
+
+	return CLIResponse{
+		Success: true,
+		Data: map[string]interface{}{
+			"series":     series,
+			"points":     points,
+			"count":      len(points),
+			"memory_kb":  ts.MemoryUsage() / 1024,
+		},
+	}
 }

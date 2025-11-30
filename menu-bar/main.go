@@ -8,14 +8,19 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/getlantern/systray"
+	"github.com/gorilla/websocket"
+	"github.com/miguelemosreverte/family-vpn/protocol"
 	"github.com/sqweek/dialog"
 )
 
@@ -60,6 +65,10 @@ var (
 
 	// Extension manager
 	extensionManager *ExtensionManager
+
+	// EventBus WebSocket connection
+	wsConn     *websocket.Conn
+	wsConnLock sync.Mutex
 )
 
 // getEnv reads an environment variable or returns a default value
@@ -442,6 +451,9 @@ func onReady() {
 
 	// Watch desktop app - quit menu bar if desktop quits
 	go watchDesktopApp()
+
+	// Start EventBus reconnector (monitors VPN state and manages EventBus connection)
+	go eventBusReconnector()
 
 	// Auto-connect on startup (unless in dev mode)
 	if !devMode {
@@ -1305,7 +1317,259 @@ func startVideoCall(peer *PeerInfo) {
 }
 
 
+// ==================== EventBus Integration ====================
+
+// connectEventBus establishes WebSocket connection to the VPN server's EventBus
+func connectEventBus() {
+	// Use VPN gateway for EventBus connection (same as VPN client)
+	vpnGateway := "10.8.0.1"
+	hostname, _ := os.Hostname()
+
+	u := url.URL{
+		Scheme:   "ws",
+		Host:     fmt.Sprintf("%s:9000", vpnGateway),
+		Path:     "/ws",
+		RawQuery: fmt.Sprintf("vpn_ip=menubar-%s", hostname),
+	}
+
+	log.Printf("[EventBus] Connecting to %s", u.String())
+
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+	}
+
+	conn, _, err := dialer.Dial(u.String(), nil)
+	if err != nil {
+		log.Printf("[EventBus] Failed to connect: %v", err)
+		return
+	}
+
+	wsConnLock.Lock()
+	wsConn = conn
+	wsConnLock.Unlock()
+
+	log.Printf("[EventBus] Connected successfully")
+
+	// Subscribe to namespaces
+	subscribeEventBus()
+
+	// Report version
+	reportVersionEventBus()
+
+	// Handle incoming messages
+	go handleEventBusMessages()
+}
+
+// subscribeEventBus sends subscription request for EventBus namespaces
+func subscribeEventBus() {
+	wsConnLock.Lock()
+	defer wsConnLock.Unlock()
+
+	if wsConn == nil {
+		return
+	}
+
+	// Subscribe to updates, peers, versions, system, and health events
+	sub := map[string]interface{}{
+		"type":       "subscribe",
+		"namespaces": []string{"updates.*", "peers.*", "versions.*", "system.*", "health.*"},
+	}
+
+	if err := wsConn.WriteJSON(sub); err != nil {
+		log.Printf("[EventBus] Failed to subscribe: %v", err)
+	} else {
+		log.Printf("[EventBus] Subscribed to: updates.*, peers.*, versions.*, system.*, health.*")
+	}
+}
+
+// reportVersionEventBus publishes menu-bar version to EventBus
+func reportVersionEventBus() {
+	wsConnLock.Lock()
+	defer wsConnLock.Unlock()
+
+	if wsConn == nil {
+		return
+	}
+
+	// Get Git commit
+	exePath, err := os.Executable()
+	repoDir := filepath.Dir(filepath.Dir(exePath))
+	cmd := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
+	output, err := cmd.Output()
+
+	commit := "unknown"
+	if err == nil {
+		commit = strings.TrimSpace(string(output))
+	}
+
+	hostname, _ := os.Hostname()
+
+	// Publish version event
+	versionEvent := protocol.Event{
+		Namespace: protocol.NSVersionsClient,
+		Timestamp: time.Now().UnixMilli(),
+		Data: map[string]interface{}{
+			"commit":    commit,
+			"hostname":  hostname,
+			"component": "menu-bar",
+			"os":        runtime.GOOS,
+		},
+	}
+
+	if err := wsConn.WriteJSON(versionEvent); err != nil {
+		log.Printf("[EventBus] Failed to publish version: %v", err)
+	} else {
+		displayCommit := commit
+		if len(commit) > 8 {
+			displayCommit = commit[:8]
+		}
+		log.Printf("[EventBus] Published version: %s (menu-bar)", displayCommit)
+	}
+}
+
+// handleEventBusMessages processes incoming EventBus messages
+func handleEventBusMessages() {
+	for {
+		wsConnLock.Lock()
+		conn := wsConn
+		wsConnLock.Unlock()
+
+		if conn == nil {
+			return
+		}
+
+		var msg map[string]interface{}
+		err := conn.ReadJSON(&msg)
+		if err != nil {
+			if websocket.IsCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("[EventBus] Connection closed")
+			} else {
+				log.Printf("[EventBus] Read error: %v", err)
+			}
+			// Schedule reconnect
+			go func() {
+				time.Sleep(5 * time.Second)
+				if vpnState.Connected {
+					connectEventBus()
+				}
+			}()
+			return
+		}
+
+		// Check if this is an EventBus event (has "ns" field)
+		if ns, hasNS := msg["ns"].(string); hasNS {
+			handleEventBusEvent(ns, msg)
+			continue
+		}
+
+		// Skip pong responses
+		if msgType, _ := msg["type"].(string); msgType == "pong" {
+			continue
+		}
+	}
+}
+
+// handleEventBusEvent processes namespaced events
+func handleEventBusEvent(ns string, msg map[string]interface{}) {
+	data, _ := msg["data"].(map[string]interface{})
+	seq, _ := msg["seq"].(float64)
+
+	log.Printf("[EventBus] Event ns=%s seq=%.0f", ns, seq)
+
+	// Handle updates namespace
+	if strings.HasPrefix(ns, "updates.") {
+		switch ns {
+		case protocol.NSUpdatesAvailable:
+			domain, _ := data["domain"].(string)
+			commit, _ := data["commit"].(string)
+
+			displayCommit := commit
+			if len(commit) > 8 {
+				displayCommit = commit[:8]
+			}
+
+			log.Printf("[EventBus] Update available: domain=%s commit=%s", domain, displayCommit)
+
+			// Handle menu-bar specific updates
+			if domain == "" || domain == "menu-bar" || domain == "all" {
+				log.Printf("[EventBus] Triggering menu-bar update...")
+				go performUpdate()
+			}
+		}
+	}
+
+	// Handle peers namespace - update peer list in real-time
+	if strings.HasPrefix(ns, "peers.") {
+		switch ns {
+		case protocol.NSPeersJoined:
+			log.Printf("[EventBus] Peer joined: %v", data)
+			// Could update peer menu items here
+		case protocol.NSPeersLeft:
+			log.Printf("[EventBus] Peer left: %v", data)
+			// Could update peer menu items here
+		}
+	}
+
+	// Handle versions namespace
+	if strings.HasPrefix(ns, "versions.") {
+		switch ns {
+		case protocol.NSVersionsSync:
+			log.Printf("[EventBus] Version sync requested")
+			go reportVersionEventBus()
+		}
+	}
+
+	// Handle health namespace
+	if strings.HasPrefix(ns, "health.") {
+		switch ns {
+		case protocol.NSHealthPing:
+			// Log health ping events (could be used to update menu bar status)
+			if target, ok := data["target"].(string); ok {
+				if latency, ok := data["latency"].(float64); ok {
+					log.Printf("[EventBus] Health ping: target=%s latency=%.0fms", target, latency)
+				}
+			}
+		}
+	}
+}
+
+// eventBusReconnector monitors VPN state and manages EventBus connection
+func eventBusReconnector() {
+	wasConnected := false
+
+	for {
+		time.Sleep(5 * time.Second)
+
+		if vpnState.Connected && !wasConnected {
+			// VPN just connected, establish EventBus connection
+			log.Printf("[EventBus] VPN connected, establishing EventBus connection...")
+			time.Sleep(2 * time.Second) // Wait for VPN to stabilize
+			go connectEventBus()
+			wasConnected = true
+		} else if !vpnState.Connected && wasConnected {
+			// VPN disconnected, clean up EventBus
+			wsConnLock.Lock()
+			if wsConn != nil {
+				wsConn.Close()
+				wsConn = nil
+			}
+			wsConnLock.Unlock()
+			wasConnected = false
+		}
+	}
+}
+
+// ==================== End EventBus Integration ====================
+
 func onExit() {
+	// Close EventBus connection
+	wsConnLock.Lock()
+	if wsConn != nil {
+		wsConn.Close()
+		wsConn = nil
+	}
+	wsConnLock.Unlock()
+
 	// Stop all extensions first
 	if extensionManager != nil {
 		log.Println("[EXT] Stopping all extensions...")

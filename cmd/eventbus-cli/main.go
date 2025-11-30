@@ -974,6 +974,53 @@ func cmdHealth() {
 	}
 }
 
+func cmdBenchmark(action string) {
+	if !isDaemonRunning() {
+		fmt.Println("Error: Daemon not running. Start with: eventbus-daemon &")
+		os.Exit(1)
+	}
+
+	args := map[string]interface{}{"action": action}
+	resp, err := sendToDaemon(CLIRequest{Command: "benchmark", Args: args})
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !resp.Success {
+		fmt.Printf("Error: %s\n", resp.Error)
+		os.Exit(1)
+	}
+
+	// Output as JSON for UI consumption
+	printJSON(resp.Data)
+}
+
+func cmdTimeSeries(series string) {
+	if !isDaemonRunning() {
+		fmt.Println("Error: Daemon not running. Start with: eventbus-daemon &")
+		os.Exit(1)
+	}
+
+	args := map[string]interface{}{
+		"series": series,
+		"last":   *lastDuration,
+	}
+	resp, err := sendToDaemon(CLIRequest{Command: "timeseries", Args: args})
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !resp.Success {
+		fmt.Printf("Error: %s\n", resp.Error)
+		os.Exit(1)
+	}
+
+	// Output as JSON for UI consumption
+	printJSON(resp.Data)
+}
+
 func printUsage() {
 	fmt.Println(`eventbus-cli - Event Bus CLI for Family VPN
 
@@ -987,6 +1034,8 @@ Commands:
   logs [hostname]           View event logs (Splunk-like)
   stats [hostname]          View client statistics
   health                    System health summary
+  benchmark [run|status|latest]  Latency/throughput benchmarks
+  timeseries [latency|throughput]  View time series data (JSON)
   update <target>           Trigger update on client(s)
   rollback <vpn-ip> --to <commit>  Rollback client to specific version
   subscribe <patterns...>   Subscribe to event patterns
@@ -998,6 +1047,12 @@ Update Targets:
   update all                Update all connected clients
   update 10.8.0.4           Update specific client by VPN IP
   update 10.8.0.4 10.8.0.5  Update multiple clients
+
+Benchmark Actions:
+  benchmark                 Show benchmark summary
+  benchmark run             Manually trigger a benchmark
+  benchmark status          Show benchmark scheduler status
+  benchmark latest          Show latest benchmark results
 
 Flags:`)
 	flag.PrintDefaults()
@@ -1013,6 +1068,10 @@ Examples:
   eventbus-cli stats                         # View all client statistics
   eventbus-cli stats MacBook-Air.local       # View stats for specific client
   eventbus-cli health                        # System health summary
+  eventbus-cli benchmark                     # Benchmark summary (JSON)
+  eventbus-cli benchmark run                 # Manually run benchmark
+  eventbus-cli timeseries latency            # Get latency time series (JSON)
+  eventbus-cli timeseries --last 24h         # Get last 24h of data
   eventbus-cli update all                    # Update all clients to latest
   eventbus-cli update 10.8.0.4               # Update specific client
   eventbus-cli rollback 10.8.0.4 --to abc123 # Rollback to specific commit
@@ -1025,6 +1084,7 @@ Event Patterns:
   peers.*       - Peer join/leave events
   system.*      - System events (connect, disconnect, snapshot)
   updates.*     - Update events
+  benchmark.*   - Benchmark results
   *             - All events`)
 }
 
@@ -1113,6 +1173,20 @@ func main() {
 
 	case "ping-history", "pings":
 		cmdPingHistory()
+
+	case "benchmark":
+		action := ""
+		if len(args) > 1 {
+			action = args[1]
+		}
+		cmdBenchmark(action)
+
+	case "timeseries", "ts":
+		series := ""
+		if len(args) > 1 {
+			series = args[1]
+		}
+		cmdTimeSeries(series)
 
 	case "help":
 		printUsage()

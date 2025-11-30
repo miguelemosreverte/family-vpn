@@ -12,11 +12,14 @@ Use this skill when:
 
 ## Known Clients
 
-| Hostname | Local IP | VPN IP | Username |
-|----------|----------|--------|----------|
-| Miguel's MacBook Air | 192.168.0.X | 10.8.0.2 | miguel_lemos |
-| Miguel's Mac mini | miguel-lemoss-Mac-mini.local | 10.8.0.3 | miguel_lemos |
-| Anastasia's MacBook | 192.168.0.14 | 10.8.0.10 | anastasiia |
+**IMPORTANT**: Always prefer using the hostname (e.g., `miguel-lemoss-Mac-mini.local`) over IP addresses.
+VPN IPs are floating/dynamic and may change between connections.
+
+| Hostname | mDNS Hostname | Username |
+|----------|---------------|----------|
+| Miguel's MacBook Air | Miguels-MacBook-Air.local | miguel_lemos |
+| Miguel's Mac mini | miguel-lemoss-Mac-mini.local | miguel_lemos |
+| Anastasia's MacBook | MacBook-Air-Anastasiia.local | anastasiia |
 
 ## SSH Connection
 
