@@ -26,6 +26,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -654,6 +655,11 @@ func cmdPeers() {
 }
 
 var toVersion = flag.String("to", "", "Target version/commit for rollback")
+var lastDuration = flag.String("last", "", "Time duration for logs (e.g., 2h, 30m, 1d)")
+var sinceTime = flag.String("since", "", "Start time for logs (RFC3339 or YYYY-MM-DD)")
+var untilTime = flag.String("until", "", "End time for logs (RFC3339 or YYYY-MM-DD)")
+var logLimit = flag.Int("limit", 100, "Maximum number of log entries to show")
+var logNamespace = flag.String("ns", "", "Filter logs by namespace prefix")
 
 func cmdStatus() {
 	if !isDaemonRunning() {
@@ -700,6 +706,274 @@ func cmdStatus() {
 	}
 }
 
+func cmdLogs(hostname string) {
+	if !isDaemonRunning() {
+		fmt.Println("Error: Daemon not running. Start with: eventbus-daemon &")
+		os.Exit(1)
+	}
+
+	args := map[string]interface{}{
+		"hostname":  hostname,
+		"namespace": *logNamespace,
+		"limit":     float64(*logLimit),
+		"since":     *sinceTime,
+		"until":     *untilTime,
+		"last":      *lastDuration,
+	}
+
+	resp, err := sendToDaemon(CLIRequest{Command: "logs", Args: args})
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !resp.Success {
+		fmt.Printf("Error: %s\n", resp.Error)
+		os.Exit(1)
+	}
+
+	fmt.Println("=== Event Logs ===")
+
+	if data, ok := resp.Data.(map[string]interface{}); ok {
+		// Show filter info
+		if filter, ok := data["filter"].(map[string]interface{}); ok {
+			if h, _ := filter["hostname"].(string); h != "" {
+				fmt.Printf("Hostname: %s\n", h)
+			}
+			if ns, _ := filter["namespace"].(string); ns != "" {
+				fmt.Printf("Namespace: %s\n", ns)
+			}
+		}
+
+		count, _ := data["count"].(float64)
+		fmt.Printf("Events: %d\n", int(count))
+		fmt.Println("─────────────────────────────────────────")
+
+		if events, ok := data["events"].([]interface{}); ok {
+			for _, e := range events {
+				if ev, ok := e.(map[string]interface{}); ok {
+					ns, _ := ev["ns"].(string)
+					hostname, _ := ev["hostname"].(string)
+					ts, _ := ev["ts"].(string)
+
+					// Parse and format timestamp
+					if t, err := time.Parse(time.RFC3339Nano, ts); err == nil {
+						ts = t.Format("15:04:05")
+					}
+
+					if hostname != "" {
+						fmt.Printf("[%s] %s: %s\n", ts, hostname, ns)
+					} else {
+						fmt.Printf("[%s] %s\n", ts, ns)
+					}
+
+					// Show data summary if present
+					if d, ok := ev["data"].(map[string]interface{}); ok && len(d) > 0 {
+						dataJSON, _ := json.MarshalIndent(d, "  ", "  ")
+						fmt.Printf("  %s\n", dataJSON)
+					}
+				}
+			}
+		}
+
+		if int(count) == 0 {
+			fmt.Println("No events found matching the filter")
+		}
+	}
+}
+
+func cmdStats(hostname string) {
+	if !isDaemonRunning() {
+		fmt.Println("Error: Daemon not running. Start with: eventbus-daemon &")
+		os.Exit(1)
+	}
+
+	args := map[string]interface{}{"hostname": hostname}
+	resp, err := sendToDaemon(CLIRequest{Command: "stats", Args: args})
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !resp.Success {
+		fmt.Printf("Error: %s\n", resp.Error)
+		os.Exit(1)
+	}
+
+	fmt.Println("=== Client Statistics ===")
+
+	if data, ok := resp.Data.(map[string]interface{}); ok {
+		// Daemon stats
+		if uptime, ok := data["daemon_uptime"].(float64); ok {
+			duration := time.Duration(uptime) * time.Second
+			fmt.Printf("Daemon Uptime: %s\n", duration.Round(time.Second))
+		}
+		if reconnects, ok := data["reconnects"].(float64); ok {
+			fmt.Printf("Daemon Reconnects: %d\n", int(reconnects))
+		}
+		if events, ok := data["event_count"].(float64); ok {
+			fmt.Printf("Events in History: %d\n", int(events))
+		}
+
+		fmt.Println()
+
+		// Client stats
+		if clients, ok := data["clients"].(map[string]interface{}); ok {
+			if len(clients) == 0 {
+				fmt.Println("No client statistics available yet")
+				return
+			}
+
+			for h, stats := range clients {
+				fmt.Printf("--- %s ---\n", h)
+				if s, ok := stats.(map[string]interface{}); ok {
+					if vpnIP, ok := s["vpn_ip"].(string); ok && vpnIP != "" {
+						fmt.Printf("  VPN IP: %s\n", vpnIP)
+					}
+					if version, ok := s["current_version"].(string); ok && version != "" {
+						if len(version) > 8 {
+							version = version[:8]
+						}
+						fmt.Printf("  Version: %s\n", version)
+					}
+					if connects, ok := s["connects"].(float64); ok {
+						fmt.Printf("  Connects: %d\n", int(connects))
+					}
+					if disconnects, ok := s["disconnects"].(float64); ok {
+						fmt.Printf("  Disconnects: %d\n", int(disconnects))
+					}
+					if deploys, ok := s["deployments"].(float64); ok {
+						fmt.Printf("  Deployments: %d\n", int(deploys))
+					}
+					if success, ok := s["successful_deploys"].(float64); ok {
+						fmt.Printf("  Successful: %d\n", int(success))
+					}
+					if failed, ok := s["failed_deploys"].(float64); ok && failed > 0 {
+						fmt.Printf("  Failed: %d\n", int(failed))
+					}
+					if uptime, ok := s["uptime_seconds"].(float64); ok {
+						duration := time.Duration(uptime) * time.Second
+						fmt.Printf("  Tracked Since: %s ago\n", duration.Round(time.Second))
+					}
+					if lastSeen, ok := s["last_seen"].(string); ok {
+						if t, err := time.Parse(time.RFC3339Nano, lastSeen); err == nil {
+							fmt.Printf("  Last Seen: %s\n", time.Since(t).Round(time.Second))
+						}
+					}
+				}
+				fmt.Println()
+			}
+		} else if client, ok := data["client"].(map[string]interface{}); ok {
+			// Single client stats
+			if h, ok := client["hostname"].(string); ok {
+				fmt.Printf("--- %s ---\n", h)
+			}
+			if vpnIP, ok := client["vpn_ip"].(string); ok && vpnIP != "" {
+				fmt.Printf("  VPN IP: %s\n", vpnIP)
+			}
+			if version, ok := client["current_version"].(string); ok && version != "" {
+				if len(version) > 8 {
+					version = version[:8]
+				}
+				fmt.Printf("  Version: %s\n", version)
+			}
+			if connects, ok := client["connects"].(float64); ok {
+				fmt.Printf("  Connects: %d\n", int(connects))
+			}
+			if disconnects, ok := client["disconnects"].(float64); ok {
+				fmt.Printf("  Disconnects: %d\n", int(disconnects))
+			}
+			if deploys, ok := client["deployments"].(float64); ok {
+				fmt.Printf("  Deployments: %d\n", int(deploys))
+			}
+		}
+	}
+}
+
+func cmdHealth() {
+	if !isDaemonRunning() {
+		fmt.Println("=== System Health ===")
+		fmt.Println("Daemon: NOT RUNNING")
+		fmt.Println("\nStart the daemon with: eventbus-daemon &")
+		return
+	}
+
+	resp, err := sendToDaemon(CLIRequest{Command: "health", Args: map[string]interface{}{}})
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !resp.Success {
+		fmt.Printf("Error: %s\n", resp.Error)
+		os.Exit(1)
+	}
+
+	fmt.Println("=== System Health ===")
+
+	if data, ok := resp.Data.(map[string]interface{}); ok {
+		// Daemon health
+		if daemon, ok := data["daemon"].(map[string]interface{}); ok {
+			connected, _ := daemon["connected"].(bool)
+			status := "DISCONNECTED"
+			if connected {
+				status = "CONNECTED"
+			}
+			fmt.Printf("WebSocket: %s\n", status)
+
+			if uptime, ok := daemon["uptime"].(string); ok {
+				fmt.Printf("Uptime: %s\n", uptime)
+			}
+			if reconnects, ok := daemon["reconnects"].(float64); ok {
+				fmt.Printf("Reconnects: %d\n", int(reconnects))
+			}
+			if events, ok := daemon["event_count"].(float64); ok {
+				fmt.Printf("Events (24h): %d\n", int(events))
+			}
+			if recent, ok := daemon["recent_events"].(float64); ok {
+				fmt.Printf("Events (1h): %d\n", int(recent))
+			}
+		}
+
+		fmt.Println()
+
+		// Client health
+		if clients, ok := data["clients"].(map[string]interface{}); ok {
+			if total, ok := clients["total"].(float64); ok {
+				fmt.Printf("Clients Tracked: %d\n", int(total))
+			}
+
+			if health, ok := clients["health"].(map[string]interface{}); ok && len(health) > 0 {
+				fmt.Println("\nClient Health:")
+				for hostname, status := range health {
+					statusStr, _ := status.(string)
+					indicator := ""
+					switch statusStr {
+					case "healthy":
+						indicator = "[OK]"
+					case "stale":
+						indicator = "[?]"
+					case "offline":
+						indicator = "[X]"
+					}
+					fmt.Printf("  %s %s (%s)\n", indicator, hostname, statusStr)
+				}
+			}
+
+			if versions, ok := clients["versions"].(map[string]interface{}); ok && len(versions) > 0 {
+				fmt.Println("\nVersions:")
+				for hostname, version := range versions {
+					versionStr, _ := version.(string)
+					if len(versionStr) > 8 {
+						versionStr = versionStr[:8]
+					}
+					fmt.Printf("  %s: %s\n", hostname, versionStr)
+				}
+			}
+		}
+	}
+}
+
 func printUsage() {
 	fmt.Println(`eventbus-cli - Event Bus CLI for Family VPN
 
@@ -710,6 +984,9 @@ Commands:
   status                    Show daemon status
   versions                  Get all client versions
   peers                     List connected peers
+  logs [hostname]           View event logs (Splunk-like)
+  stats [hostname]          View client statistics
+  health                    System health summary
   update <target>           Trigger update on client(s)
   rollback <vpn-ip> --to <commit>  Rollback client to specific version
   subscribe <patterns...>   Subscribe to event patterns
@@ -729,6 +1006,13 @@ Flags:`)
 Examples:
   eventbus-cli versions                      # Get client versions
   eventbus-cli peers                         # List connected peers
+  eventbus-cli logs                          # View all event logs
+  eventbus-cli logs --last 2h                # View logs from last 2 hours
+  eventbus-cli logs MacBook-Air.local        # View logs for specific client
+  eventbus-cli logs --ns versions            # Filter by namespace prefix
+  eventbus-cli stats                         # View all client statistics
+  eventbus-cli stats MacBook-Air.local       # View stats for specific client
+  eventbus-cli health                        # System health summary
   eventbus-cli update all                    # Update all clients to latest
   eventbus-cli update 10.8.0.4               # Update specific client
   eventbus-cli rollback 10.8.0.4 --to abc123 # Rollback to specific commit
@@ -777,6 +1061,34 @@ func main() {
 
 	case "peers":
 		cmdPeers()
+
+	case "logs":
+		hostname := ""
+		// Filter out flags from positional args (flags should come before command for proper parsing)
+		for i := 1; i < len(args); i++ {
+			arg := args[i]
+			// Skip flag-like arguments and their values
+			if strings.HasPrefix(arg, "-") {
+				// If it's a flag that takes a value (--last, --ns, etc), skip the next arg too
+				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+					i++
+				}
+				continue
+			}
+			hostname = arg
+			break
+		}
+		cmdLogs(hostname)
+
+	case "stats":
+		hostname := ""
+		if len(args) > 1 {
+			hostname = args[1]
+		}
+		cmdStats(hostname)
+
+	case "health":
+		cmdHealth()
 
 	case "update":
 		if len(args) < 2 {

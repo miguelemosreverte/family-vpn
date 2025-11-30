@@ -42,13 +42,15 @@ import (
 )
 
 const (
-	socketPath     = "/tmp/family-vpn-eventbus.sock"
-	pidFile        = "/tmp/family-vpn-eventbus.pid"
-	logFile        = "/tmp/family-vpn-eventbus.log"
-	serverURL      = "ws://10.8.0.1:9000/ws"
-	reconnectDelay = 5 * time.Second
-	pingInterval   = 30 * time.Second
-	pongTimeout    = 90 * time.Second
+	socketPath       = "/tmp/family-vpn-eventbus.sock"
+	pidFile          = "/tmp/family-vpn-eventbus.pid"
+	logFile          = "/tmp/family-vpn-eventbus.log"
+	serverURL        = "ws://10.8.0.1:9000/ws"
+	reconnectDelay   = 5 * time.Second
+	pingInterval     = 30 * time.Second
+	pongTimeout      = 90 * time.Second
+	maxEventHistory  = 10000            // Max events to keep in memory
+	eventRetention   = 24 * time.Hour   // Keep events for 24 hours
 )
 
 // Daemon holds the daemon state
@@ -68,6 +70,14 @@ type Daemon struct {
 	serverVersion string
 	peers         []Peer
 	lastSnapshot  time.Time
+
+	// Event history (circular buffer, 24h retention)
+	eventHistory []EventRecord
+	eventIndex   int // Next write position in circular buffer
+
+	// Client statistics
+	clientStats map[string]*ClientStats // hostname -> stats
+	startedAt   time.Time               // When daemon started
 
 	// Local info
 	hostname  string
@@ -110,6 +120,30 @@ type Event struct {
 	Data      map[string]interface{} `json:"data,omitempty"`
 }
 
+// EventRecord stores an event with additional metadata for history
+type EventRecord struct {
+	Namespace  string                 `json:"ns"`
+	Timestamp  time.Time              `json:"ts"`
+	Hostname   string                 `json:"hostname,omitempty"`
+	Data       map[string]interface{} `json:"data,omitempty"`
+	ReceivedAt time.Time              `json:"received_at"`
+}
+
+// ClientStats tracks statistics for each client
+type ClientStats struct {
+	Hostname        string    `json:"hostname"`
+	VPNIP           string    `json:"vpn_ip"`
+	FirstSeen       time.Time `json:"first_seen"`
+	LastSeen        time.Time `json:"last_seen"`
+	Connects        int       `json:"connects"`
+	Disconnects     int       `json:"disconnects"`
+	Deployments     int       `json:"deployments"`
+	SuccessfulDeploys int     `json:"successful_deploys"`
+	FailedDeploys   int       `json:"failed_deploys"`
+	CurrentVersion  string    `json:"current_version"`
+	UptimeSeconds   int64     `json:"uptime_seconds"`
+}
+
 func main() {
 	// Setup logging
 	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -134,6 +168,9 @@ func main() {
 	daemon := &Daemon{
 		versions:     make(map[string]string),
 		hostnameToIP: make(map[string]string),
+		eventHistory: make([]EventRecord, 0, maxEventHistory),
+		clientStats:  make(map[string]*ClientStats),
+		startedAt:    time.Now(),
 		shutdown:     make(chan struct{}),
 		logger:       logger,
 	}
@@ -288,6 +325,12 @@ func (d *Daemon) handleCommand(req CLIRequest) CLIResponse {
 		return d.cmdRollback(req.Args)
 	case "broadcast":
 		return d.cmdBroadcast(req.Args)
+	case "logs":
+		return d.cmdLogs(req.Args)
+	case "stats":
+		return d.cmdStats(req.Args)
+	case "health":
+		return d.cmdHealth(req.Args)
 	default:
 		return CLIResponse{Success: false, Error: "unknown command: " + req.Command}
 	}
@@ -606,6 +649,19 @@ func (d *Daemon) handleWSMessage(data []byte) {
 func (d *Daemon) handleEvent(ns string, msg map[string]interface{}) {
 	d.logger.Printf("[EVENT] %s", ns)
 
+	// Extract hostname from event data for recording
+	hostname := ""
+	if data, ok := msg["data"].(map[string]interface{}); ok {
+		hostname, _ = data["hostname"].(string)
+	}
+
+	// Record the event in history
+	if data, ok := msg["data"].(map[string]interface{}); ok {
+		d.recordEvent(ns, hostname, data)
+	} else {
+		d.recordEvent(ns, hostname, nil)
+	}
+
 	switch {
 	case ns == "updates.available":
 		d.handleUpdateEvent(msg)
@@ -615,9 +671,15 @@ func (d *Daemon) handleEvent(ns string, msg map[string]interface{}) {
 
 	case ns == "peers.joined":
 		d.handlePeerJoined(msg)
+		if hostname != "" {
+			d.recordConnect(hostname)
+		}
 
 	case ns == "peers.left":
 		d.handlePeerLeft(msg)
+		if hostname != "" {
+			d.recordDisconnect(hostname)
+		}
 
 	case ns == "system.snapshot":
 		d.handleSnapshot(msg)
@@ -729,6 +791,9 @@ func (d *Daemon) handleVersionEvent(msg map[string]interface{}) {
 			d.hostnameToIP[hostname] = vpnIP
 		}
 		d.mu.Unlock()
+
+		// Update client stats
+		d.updateClientSeen(hostname, vpnIP, version)
 	} else if vpnIP != "" && version != "" {
 		// Legacy: server sent only vpn_ip, store with vpn_ip as key
 		d.mu.Lock()
@@ -823,6 +888,350 @@ func (d *Daemon) handleSnapshot(msg map[string]interface{}) {
 	}
 
 	d.mu.Unlock()
+}
+
+// ============================================================================
+// Event History & Stats Functions
+// ============================================================================
+
+// recordEvent stores an event in the history buffer
+func (d *Daemon) recordEvent(ns string, hostname string, data map[string]interface{}) {
+	now := time.Now()
+	record := EventRecord{
+		Namespace:  ns,
+		Timestamp:  now,
+		Hostname:   hostname,
+		Data:       data,
+		ReceivedAt: now,
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// Append to history (circular buffer behavior)
+	if len(d.eventHistory) < maxEventHistory {
+		d.eventHistory = append(d.eventHistory, record)
+	} else {
+		d.eventHistory[d.eventIndex] = record
+		d.eventIndex = (d.eventIndex + 1) % maxEventHistory
+	}
+}
+
+// pruneOldEvents removes events older than retention period
+func (d *Daemon) pruneOldEvents() {
+	cutoff := time.Now().Add(-eventRetention)
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	newHistory := make([]EventRecord, 0, len(d.eventHistory))
+	for _, e := range d.eventHistory {
+		if e.ReceivedAt.After(cutoff) {
+			newHistory = append(newHistory, e)
+		}
+	}
+	d.eventHistory = newHistory
+	d.eventIndex = 0
+}
+
+// getOrCreateStats gets or creates stats for a hostname
+func (d *Daemon) getOrCreateStats(hostname string) *ClientStats {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if stats, ok := d.clientStats[hostname]; ok {
+		return stats
+	}
+
+	stats := &ClientStats{
+		Hostname:  hostname,
+		FirstSeen: time.Now(),
+		LastSeen:  time.Now(),
+	}
+	d.clientStats[hostname] = stats
+	return stats
+}
+
+// updateClientSeen updates last seen time for a client
+func (d *Daemon) updateClientSeen(hostname, vpnIP, version string) {
+	stats := d.getOrCreateStats(hostname)
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	stats.LastSeen = time.Now()
+	stats.VPNIP = vpnIP
+	stats.CurrentVersion = version
+}
+
+// recordConnect records a client connection
+func (d *Daemon) recordConnect(hostname string) {
+	stats := d.getOrCreateStats(hostname)
+
+	d.mu.Lock()
+	stats.Connects++
+	stats.LastSeen = time.Now()
+	d.mu.Unlock()
+
+	d.recordEvent("stats.connect", hostname, map[string]interface{}{
+		"hostname": hostname,
+	})
+}
+
+// recordDisconnect records a client disconnection
+func (d *Daemon) recordDisconnect(hostname string) {
+	stats := d.getOrCreateStats(hostname)
+
+	d.mu.Lock()
+	stats.Disconnects++
+	d.mu.Unlock()
+
+	d.recordEvent("stats.disconnect", hostname, map[string]interface{}{
+		"hostname": hostname,
+	})
+}
+
+// recordDeployment records a deployment attempt
+func (d *Daemon) recordDeployment(hostname string, success bool, version string) {
+	stats := d.getOrCreateStats(hostname)
+
+	d.mu.Lock()
+	stats.Deployments++
+	if success {
+		stats.SuccessfulDeploys++
+		stats.CurrentVersion = version
+	} else {
+		stats.FailedDeploys++
+	}
+	d.mu.Unlock()
+
+	d.recordEvent("stats.deployment", hostname, map[string]interface{}{
+		"hostname": hostname,
+		"success":  success,
+		"version":  version,
+	})
+}
+
+// getEventsByFilter returns events matching the filter criteria
+func (d *Daemon) getEventsByFilter(hostname string, since time.Time, until time.Time, namespace string, limit int) []EventRecord {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var results []EventRecord
+	for _, e := range d.eventHistory {
+		// Apply filters
+		if hostname != "" && e.Hostname != hostname {
+			continue
+		}
+		if !since.IsZero() && e.ReceivedAt.Before(since) {
+			continue
+		}
+		if !until.IsZero() && e.ReceivedAt.After(until) {
+			continue
+		}
+		if namespace != "" && !strings.HasPrefix(e.Namespace, namespace) {
+			continue
+		}
+
+		results = append(results, e)
+
+		if limit > 0 && len(results) >= limit {
+			break
+		}
+	}
+
+	return results
+}
+
+// ============================================================================
+// CLI Command Handlers for Observability
+// ============================================================================
+
+func (d *Daemon) cmdLogs(args map[string]interface{}) CLIResponse {
+	hostname, _ := args["hostname"].(string)
+	namespace, _ := args["namespace"].(string)
+	limitFloat, _ := args["limit"].(float64)
+	limit := int(limitFloat)
+	if limit == 0 {
+		limit = 100 // Default limit
+	}
+
+	// Parse time filters
+	var since, until time.Time
+	if sinceStr, ok := args["since"].(string); ok && sinceStr != "" {
+		since = parseTimeFilter(sinceStr)
+	}
+	if untilStr, ok := args["until"].(string); ok && untilStr != "" {
+		until = parseTimeFilter(untilStr)
+	}
+	if lastStr, ok := args["last"].(string); ok && lastStr != "" {
+		since = parseLastDuration(lastStr)
+	}
+
+	events := d.getEventsByFilter(hostname, since, until, namespace, limit)
+
+	return CLIResponse{
+		Success: true,
+		Data: map[string]interface{}{
+			"events": events,
+			"count":  len(events),
+			"filter": map[string]interface{}{
+				"hostname":  hostname,
+				"namespace": namespace,
+				"since":     since.Format(time.RFC3339),
+				"until":     until.Format(time.RFC3339),
+				"limit":     limit,
+			},
+		},
+	}
+}
+
+func (d *Daemon) cmdStats(args map[string]interface{}) CLIResponse {
+	hostname, _ := args["hostname"].(string)
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	// Calculate daemon uptime
+	daemonUptime := time.Since(d.startedAt).Seconds()
+
+	if hostname != "" {
+		// Return stats for specific client
+		if stats, ok := d.clientStats[hostname]; ok {
+			stats.UptimeSeconds = int64(time.Since(stats.FirstSeen).Seconds())
+			return CLIResponse{
+				Success: true,
+				Data: map[string]interface{}{
+					"client":        stats,
+					"daemon_uptime": daemonUptime,
+				},
+			}
+		}
+		return CLIResponse{Success: false, Error: "client not found: " + hostname}
+	}
+
+	// Return all client stats
+	allStats := make(map[string]*ClientStats)
+	for h, s := range d.clientStats {
+		s.UptimeSeconds = int64(time.Since(s.FirstSeen).Seconds())
+		allStats[h] = s
+	}
+
+	return CLIResponse{
+		Success: true,
+		Data: map[string]interface{}{
+			"clients":        allStats,
+			"client_count":   len(allStats),
+			"daemon_uptime":  daemonUptime,
+			"daemon_started": d.startedAt.Format(time.RFC3339),
+			"reconnects":     d.reconnects,
+			"event_count":    len(d.eventHistory),
+		},
+	}
+}
+
+func (d *Daemon) cmdHealth(args map[string]interface{}) CLIResponse {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	// Calculate health metrics
+	now := time.Now()
+	daemonUptime := now.Sub(d.startedAt)
+
+	// Count recent events (last hour)
+	recentCutoff := now.Add(-1 * time.Hour)
+	recentEvents := 0
+	for _, e := range d.eventHistory {
+		if e.ReceivedAt.After(recentCutoff) {
+			recentEvents++
+		}
+	}
+
+	// Get client health summary
+	clientHealth := make(map[string]string)
+	for hostname, stats := range d.clientStats {
+		timeSinceLastSeen := now.Sub(stats.LastSeen)
+		if timeSinceLastSeen < 2*time.Minute {
+			clientHealth[hostname] = "healthy"
+		} else if timeSinceLastSeen < 10*time.Minute {
+			clientHealth[hostname] = "stale"
+		} else {
+			clientHealth[hostname] = "offline"
+		}
+	}
+
+	return CLIResponse{
+		Success: true,
+		Data: map[string]interface{}{
+			"daemon": map[string]interface{}{
+				"connected":     d.connected,
+				"uptime":        daemonUptime.String(),
+				"uptime_secs":   daemonUptime.Seconds(),
+				"reconnects":    d.reconnects,
+				"last_pong":     d.lastPong.Format(time.RFC3339),
+				"event_count":   len(d.eventHistory),
+				"recent_events": recentEvents,
+			},
+			"clients": map[string]interface{}{
+				"total":   len(d.clientStats),
+				"health":  clientHealth,
+				"versions": d.versions,
+			},
+			"timestamp": now.Format(time.RFC3339),
+		},
+	}
+}
+
+// parseTimeFilter parses various time formats
+func parseTimeFilter(s string) time.Time {
+	// Try RFC3339
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t
+	}
+	// Try simple date
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t
+	}
+	// Try datetime without timezone
+	if t, err := time.Parse("2006-01-02 15:04:05", s); err == nil {
+		return t
+	}
+	return time.Time{}
+}
+
+// parseLastDuration parses "last X hours/minutes" style duration
+func parseLastDuration(s string) time.Time {
+	s = strings.ToLower(strings.TrimSpace(s))
+
+	// Parse formats like "2h", "30m", "1d", "24h"
+	var duration time.Duration
+	var value int
+	var unit string
+
+	fmt.Sscanf(s, "%d%s", &value, &unit)
+	if value == 0 {
+		return time.Time{}
+	}
+
+	switch unit {
+	case "s", "sec", "second", "seconds":
+		duration = time.Duration(value) * time.Second
+	case "m", "min", "minute", "minutes":
+		duration = time.Duration(value) * time.Minute
+	case "h", "hr", "hour", "hours":
+		duration = time.Duration(value) * time.Hour
+	case "d", "day", "days":
+		duration = time.Duration(value) * 24 * time.Hour
+	default:
+		// Try parsing as Go duration
+		if d, err := time.ParseDuration(s); err == nil {
+			duration = d
+		} else {
+			return time.Time{}
+		}
+	}
+
+	return time.Now().Add(-duration)
 }
 
 // ============================================================================
