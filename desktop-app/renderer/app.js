@@ -1891,6 +1891,18 @@ function startHotReload() {
 
     console.log(`🔥 Hot-reload enabled (checking every ${checkInterval / 60000} minutes)`);
 
+    // Listen for git-updated events from main process (triggered after git pull)
+    if (window.vpnAPI.onGitUpdated) {
+        window.vpnAPI.onGitUpdated(() => {
+            console.log('📥 Git updated notification received, reloading page...');
+            showNotification('UI updated! Reloading...', 'success');
+            setTimeout(() => {
+                location.reload();
+            }, 1000);
+        });
+    }
+
+    // Also do periodic checks from renderer side
     setInterval(async () => {
         try {
             const hasUpdates = await window.vpnAPI.checkForUIUpdates();
@@ -1900,10 +1912,13 @@ function startHotReload() {
                 const success = await window.vpnAPI.pullUIUpdates();
 
                 if (success) {
-                    console.log('✅ UI updated from Git, reloading...');
+                    console.log('✅ UI updated from Git, reloading page...');
                     await loadFeatureFlags();
-                    reloadCSS();
-                    showNotification('UI updated from Git!', 'success');
+                    showNotification('UI updated! Reloading...', 'success');
+                    // Full page reload to pick up HTML/JS changes
+                    setTimeout(() => {
+                        location.reload();
+                    }, 1000);
                 }
             }
         } catch (error) {

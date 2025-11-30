@@ -23,25 +23,41 @@ if (!gotTheLock) {
   });
 }
 
-// Auto-updater using git (same as menu bar app)
+// Auto-updater using git - ONLY for main.js/preload.js changes
+// UI changes (renderer/) are handled by hot-reload in app.js without restart
 function checkForUpdates() {
   const repoDir = path.join(__dirname, '..');
 
   exec('git -C ' + repoDir + ' fetch origin main', (err) => {
     if (err) return;
 
-    exec('git -C ' + repoDir + ' rev-parse HEAD', (err, localHash) => {
-      if (err) return;
-
-      exec('git -C ' + repoDir + ' rev-parse origin/main', (err, remoteHash) => {
+    // Check if there are changes that REQUIRE a full restart
+    // (main.js, preload.js, package.json - NOT renderer files)
+    exec(
+      'git -C ' + repoDir + ' diff HEAD origin/main -- desktop-app/main.js desktop-app/preload.js desktop-app/package.json',
+      (err, stdout) => {
         if (err) return;
 
-        if (localHash.trim() !== remoteHash.trim()) {
-          console.log('🔄 Update available! Pulling changes...');
+        const hasMainProcessChanges = stdout.trim().length > 0;
+
+        if (hasMainProcessChanges) {
+          console.log('🔄 Main process update detected, pulling and restarting...');
           performUpdate();
+        } else {
+          // For renderer-only changes, just pull without restart
+          // The renderer's hot-reload will handle the UI refresh
+          exec('git -C ' + repoDir + ' pull origin main', (err) => {
+            if (!err) {
+              console.log('📥 Pulled latest changes (renderer will hot-reload)');
+              // Notify renderer to reload
+              if (mainWindow && mainWindow.webContents) {
+                mainWindow.webContents.send('git-updated');
+              }
+            }
+          });
         }
-      });
-    });
+      }
+    );
   });
 }
 
@@ -54,17 +70,29 @@ function performUpdate() {
       return;
     }
 
-    exec('npm install', { cwd: __dirname }, (err) => {
-      if (err) {
-        console.error('Failed to install dependencies:', err);
-        return;
-      }
+    // Only run npm install if package.json changed
+    exec('git -C ' + repoDir + ' diff HEAD~1 -- desktop-app/package.json', (err, stdout) => {
+      const needsInstall = stdout && stdout.trim().length > 0;
 
-      console.log('✅ Update complete! Restarting...');
-      app.relaunch();
-      app.exit(0);
+      if (needsInstall) {
+        exec('npm install', { cwd: __dirname }, (err) => {
+          if (err) {
+            console.error('Failed to install dependencies:', err);
+            return;
+          }
+          doRestart();
+        });
+      } else {
+        doRestart();
+      }
     });
   });
+}
+
+function doRestart() {
+  console.log('✅ Update complete! Restarting...');
+  app.relaunch();
+  app.exit(0);
 }
 
 function createWindow() {

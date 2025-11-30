@@ -18,7 +18,10 @@ contextBridge.exposeInMainWorld('vpnAPI', {
   triggerReinstall: () => ipcRenderer.invoke('trigger-reinstall'),
 
   // Server info
-  getServerInfo: () => ipcRenderer.invoke('get-server-info')
+  getServerInfo: () => ipcRenderer.invoke('get-server-info'),
+
+  // Listen for git updates from main process
+  onGitUpdated: (callback) => ipcRenderer.on('git-updated', callback)
 });
 
 // Expose EventBus for real-time events
