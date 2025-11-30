@@ -973,6 +973,53 @@ function getOSEmoji(os) {
     }
 }
 
+// =============== UPDATE ALL CLIENTS ===============
+
+// Trigger update for all clients via server API
+async function triggerUpdateAll() {
+    const statusEl = document.getElementById('update-status');
+    const button = document.getElementById('update-all-btn');
+
+    // Disable button and show loading state
+    button.disabled = true;
+    button.textContent = 'Updating...';
+    statusEl.textContent = 'Sending update command to all clients...';
+    statusEl.style.color = '#0a84ff';
+
+    try {
+        // Call server's update API
+        const response = await fetch('https://95.217.238.72:443/update/init?component=all', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (response.ok) {
+            const result = await response.json();
+            statusEl.textContent = `Update triggered! ${result.message || 'All clients notified.'}`;
+            statusEl.style.color = '#30d158';
+            showNotification('Update command sent to all clients', 'success');
+        } else {
+            throw new Error(`Server returned ${response.status}`);
+        }
+    } catch (error) {
+        console.error('Failed to trigger update:', error);
+        statusEl.textContent = `Error: ${error.message}`;
+        statusEl.style.color = '#ff453a';
+        showNotification('Failed to trigger update: ' + error.message, 'error');
+    } finally {
+        // Re-enable button after 3 seconds
+        setTimeout(() => {
+            button.disabled = false;
+            button.textContent = 'Update All Clients';
+        }, 3000);
+    }
+}
+
+// Make it globally accessible for onclick handler
+window.triggerUpdateAll = triggerUpdateAll;
+
 // =============== MOCK DATA GENERATORS ===============
 
 function generateMockPingHistory() {

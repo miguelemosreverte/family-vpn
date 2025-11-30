@@ -161,6 +161,30 @@ body {
     background: #0077ed;
 }
 
+.action-btn {
+    background: #30d158;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    transition: all 0.2s;
+    width: 100%;
+}
+
+.action-btn:hover {
+    background: #28b94c;
+    transform: translateY(-1px);
+}
+
+.action-btn:disabled {
+    background: #86868b;
+    cursor: not-allowed;
+    transform: none;
+}
+
 .dashboard-container {
     flex: 1;
     overflow-y: auto;

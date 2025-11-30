@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/miguelemosreverte/family-vpn/protocol"
 	"github.com/songgao/water"
 )
 
@@ -872,14 +873,36 @@ func (c *VPNClient) connectWebSocket() {
 	c.wsConn = conn
 	log.Printf("[WS] Connected successfully for real-time signaling")
 
-	// Report version to server
+	// Subscribe to EventBus namespaces (Layer 0 Event Bus Protocol)
+	c.subscribeToEventBus()
+
+	// Report version to server using EventBus format
 	go c.reportVersion()
 
 	// Handle incoming WebSocket messages
 	go c.handleWebSocketMessages()
 }
 
-// reportVersion sends the client's Git commit version to the server
+// subscribeToEventBus sends subscription request for EventBus namespaces
+func (c *VPNClient) subscribeToEventBus() {
+	if c.wsConn == nil {
+		return
+	}
+
+	// Subscribe to updates, system, versions, and health events
+	sub := map[string]interface{}{
+		"type":       "subscribe",
+		"namespaces": []string{"updates.*", "system.*", "versions.*", "health.*"},
+	}
+
+	if err := c.wsConn.WriteJSON(sub); err != nil {
+		log.Printf("[EventBus] Failed to subscribe: %v", err)
+	} else {
+		log.Printf("[EventBus] Subscribed to: updates.*, system.*, versions.*, health.*")
+	}
+}
+
+// reportVersion sends the client's Git commit version to the server using EventBus format
 func (c *VPNClient) reportVersion() {
 	if c.wsConn == nil {
 		return
@@ -910,26 +933,74 @@ func (c *VPNClient) reportVersion() {
 	// Get hostname
 	hostname, _ := os.Hostname()
 
-	// Send version report to server
-	versionMsg := map[string]interface{}{
-		"type":     "version_report",
-		"commit":   commit,
-		"vpn_ip":   c.assignedIP,
-		"hostname": hostname,
-		"os":       "darwin", // TODO: detect OS properly
+	// Send version report using EventBus format (Layer 0 protocol)
+	// This publishes to versions.client namespace
+	versionEvent := protocol.Event{
+		Namespace: protocol.NSVersionsClient,
+		Timestamp: time.Now().UnixMilli(),
+		Data: map[string]interface{}{
+			"commit":   commit,
+			"vpn_ip":   c.assignedIP,
+			"hostname": hostname,
+			"os":       runtime.GOOS,
+		},
 	}
 
-	err = c.wsConn.WriteJSON(versionMsg)
+	err = c.wsConn.WriteJSON(versionEvent)
 	if err != nil {
-		log.Printf("[VERSION] Failed to send version report: %v", err)
+		log.Printf("[EventBus] Failed to publish version event: %v", err)
 	} else {
 		// Safe slice: use min of 8 or actual length
 		displayCommit := commit
 		if len(commit) > 8 {
 			displayCommit = commit[:8]
 		}
-		log.Printf("[VERSION] Reported version %s to server", displayCommit)
+		log.Printf("[EventBus] Published %s: version=%s", protocol.NSVersionsClient, displayCommit)
 	}
+
+	// Also send legacy format for backward compatibility with older servers
+	legacyMsg := map[string]interface{}{
+		"type":     "version_report",
+		"commit":   commit,
+		"vpn_ip":   c.assignedIP,
+		"hostname": hostname,
+		"os":       runtime.GOOS,
+	}
+	c.wsConn.WriteJSON(legacyMsg)
+}
+
+// runAutoUpdate executes the auto-update script and re-reports version when complete
+func (c *VPNClient) runAutoUpdate() {
+	// Get repo path (same logic as reportVersion)
+	homeDir, err := os.UserHomeDir()
+	var repoPath string
+	if err == nil {
+		repoPath = filepath.Join(homeDir, "Desktop", "family-vpn")
+	} else {
+		repoPath = "/Users/miguel_lemos/Desktop/family-vpn" // Fallback
+	}
+
+	scriptPath := filepath.Join(repoPath, "client", "auto-update.sh")
+
+	log.Printf("[UPDATE] Running auto-update script: %s", scriptPath)
+
+	cmd := exec.Command("bash", scriptPath)
+	cmd.Dir = repoPath
+	output, err := cmd.CombinedOutput()
+
+	if err != nil {
+		log.Printf("[UPDATE] Auto-update failed: %v\nOutput: %s", err, output)
+		return
+	}
+
+	log.Printf("[UPDATE] Auto-update completed successfully:\n%s", output)
+
+	// Wait a moment for install.sh to complete
+	time.Sleep(2 * time.Second)
+
+	// Re-report version to notify server of the new version
+	log.Printf("[UPDATE] Re-reporting version after update...")
+	c.reportVersion()
 }
 
 // handleWebSocketMessages receives and processes WebSocket messages from the server
@@ -952,8 +1023,20 @@ func (c *VPNClient) handleWebSocketMessages() {
 			break
 		}
 
+		// Check if this is an EventBus event (has "ns" field)
+		if ns, hasNS := msg["ns"].(string); hasNS {
+			c.handleEventBusEvent(ns, msg)
+			continue
+		}
+
+		// Legacy message handling (for backward compatibility)
 		msgType, _ := msg["type"].(string)
 		data, _ := msg["data"].(string)
+
+		// Skip pong responses
+		if msgType == "pong" {
+			continue
+		}
 
 		log.Printf("[WS] Received message type: %s", msgType)
 
@@ -1007,6 +1090,73 @@ func (c *VPNClient) handleWebSocketMessages() {
 					log.Printf("[UPDATE] Success:\n%s", output)
 				}
 			}()
+		}
+	}
+}
+
+// handleEventBusEvent processes EventBus namespaced events
+func (c *VPNClient) handleEventBusEvent(ns string, msg map[string]interface{}) {
+	data, _ := msg["data"].(map[string]interface{})
+	seq, _ := msg["seq"].(float64)
+
+	log.Printf("[EventBus] Event ns=%s seq=%.0f", ns, seq)
+
+	// Handle updates namespace
+	if strings.HasPrefix(ns, "updates.") {
+		switch ns {
+		case protocol.NSUpdatesAvailable:
+			// New update available via EventBus
+			commit, _ := data["commit"].(string)
+			domain, _ := data["domain"].(string)
+
+			displayCommit := commit
+			if len(commit) > 8 {
+				displayCommit = commit[:8]
+			}
+
+			log.Printf("[EventBus] Update available: domain=%s commit=%s", domain, displayCommit)
+
+			// Trigger auto-update for client domain
+			if domain == "" || domain == "client" || domain == "all" {
+				log.Printf("[EventBus] Triggering auto-update...")
+				go c.runAutoUpdate()
+			}
+		}
+	}
+
+	// Handle system namespace
+	if strings.HasPrefix(ns, "system.") {
+		switch ns {
+		case protocol.NSSystemSnapshot:
+			log.Printf("[EventBus] Received snapshot")
+			// Could sync state here if needed
+		case protocol.NSSystemConnect:
+			log.Printf("[EventBus] Peer connected")
+		case protocol.NSSystemDisconnect:
+			log.Printf("[EventBus] Peer disconnected")
+		}
+	}
+
+	// Handle versions namespace
+	if strings.HasPrefix(ns, "versions.") {
+		switch ns {
+		case protocol.NSVersionsSync:
+			log.Printf("[EventBus] Version sync requested")
+			// Re-report our version
+			go c.reportVersion()
+		}
+	}
+
+	// Handle health namespace
+	if strings.HasPrefix(ns, "health.") {
+		switch ns {
+		case protocol.NSHealthPing:
+			// Log health ping events (for debugging)
+			if target, ok := data["target"].(string); ok {
+				if latency, ok := data["latency"].(float64); ok {
+					log.Printf("[EventBus] Health ping: target=%s latency=%.0fms", target, latency)
+				}
+			}
 		}
 	}
 }
