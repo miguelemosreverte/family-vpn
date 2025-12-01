@@ -1190,7 +1190,7 @@ func updateInitHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Determine action based on domain
 	action := protocol.ActionReload
-	if domain == protocol.DomainCore || domain == protocol.DomainServer {
+	if domain == protocol.DomainCore || domain == protocol.DomainServer || domain == protocol.DomainAll {
 		action = protocol.ActionRestart
 	}
 
@@ -1573,7 +1573,7 @@ func (s *VPNServer) broadcastUpdate(oldCommit, newCommit string) {
 
 	// Determine action based on domain
 	action := protocol.ActionReload
-	if domain == protocol.DomainCore || domain == protocol.DomainServer {
+	if domain == protocol.DomainCore || domain == protocol.DomainServer || domain == protocol.DomainAll {
 		action = protocol.ActionRestart
 	}
 
