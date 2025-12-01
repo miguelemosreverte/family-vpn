@@ -142,6 +142,14 @@ func (c *VPNClient) setupTUN() error {
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to configure %s: %v", c.tunName, err)
 		}
+		// Add route for entire VPN subnet to enable peer-to-peer communication
+		// The point-to-point link only routes to SERVER_IP by default
+		cmd = exec.Command("route", "-n", "add", "-net", "10.8.0.0/24", "-interface", c.tunName)
+		if err := cmd.Run(); err != nil {
+			log.Printf("Warning: failed to add VPN subnet route: %v", err)
+		} else {
+			log.Printf("Added route for 10.8.0.0/24 via %s", c.tunName)
+		}
 	} else {
 		// Linux uses ip command
 		cmd := exec.Command("ip", "addr", "add", clientIP+"/24", "dev", c.tunName)
