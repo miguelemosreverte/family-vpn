@@ -680,28 +680,65 @@ func (c *VPNClient) Connect() error {
 			}
 		}()
 
+		consecutiveErrors := 0
+		const maxConsecutiveErrors = 10 // Only disconnect after 10 consecutive failures
+
 		for c.enabled {
 			// Measure network read (length + packet)
 			t0 := time.Now()
 			// Read packet length
 			if _, err := io.ReadFull(reader, lengthBuf); err != nil {
-				log.Printf("Failed to read length: %v", err)
-				done <- true
-				return
+				if err == io.EOF || strings.Contains(err.Error(), "use of closed") {
+					log.Printf("Connection closed: %v", err)
+					done <- true
+					return
+				}
+				consecutiveErrors++
+				log.Printf("Failed to read length (error %d/%d): %v", consecutiveErrors, maxConsecutiveErrors, err)
+				if consecutiveErrors >= maxConsecutiveErrors {
+					log.Printf("Too many consecutive errors, disconnecting")
+					done <- true
+					return
+				}
+				time.Sleep(100 * time.Millisecond) // Brief pause before retry
+				continue
 			}
 
 			length := binary.BigEndian.Uint32(lengthBuf)
-			if length > MTU*2 { // Sanity check
-				log.Printf("Invalid packet length: %d", length)
-				done <- true
-				return
+			if length > MTU*2 || length == 0 { // Sanity check
+				consecutiveErrors++
+				log.Printf("Invalid packet length: %d (error %d/%d) - attempting resync", length, consecutiveErrors, maxConsecutiveErrors)
+				if consecutiveErrors >= maxConsecutiveErrors {
+					log.Printf("Too many consecutive errors, disconnecting")
+					done <- true
+					return
+				}
+				// Try to resync by reading and discarding one byte at a time
+				// This helps recover from stream misalignment
+				discardBuf := make([]byte, 1)
+				for i := 0; i < 1024; i++ { // Try to resync within 1KB
+					if _, err := reader.Read(discardBuf); err != nil {
+						break
+					}
+				}
+				continue
 			}
 
 			// Reuse buffer by slicing to the exact length needed
 			if _, err := io.ReadFull(reader, packetBuf[:length]); err != nil {
-				log.Printf("Failed to read packet: %v", err)
-				done <- true
-				return
+				if err == io.EOF || strings.Contains(err.Error(), "use of closed") {
+					log.Printf("Connection closed: %v", err)
+					done <- true
+					return
+				}
+				consecutiveErrors++
+				log.Printf("Failed to read packet (error %d/%d): %v", consecutiveErrors, maxConsecutiveErrors, err)
+				if consecutiveErrors >= maxConsecutiveErrors {
+					log.Printf("Too many consecutive errors, disconnecting")
+					done <- true
+					return
+				}
+				continue
 			}
 			timeNetRead += time.Since(t0).Microseconds()
 
@@ -710,9 +747,18 @@ func (c *VPNClient) Connect() error {
 			packet, err := c.decrypt(packetBuf[:length])
 			timeDecrypt += time.Since(t1).Microseconds()
 			if err != nil {
-				log.Printf("Decryption error: %v", err)
+				consecutiveErrors++
+				log.Printf("Decryption error (error %d/%d): %v", consecutiveErrors, maxConsecutiveErrors, err)
+				if consecutiveErrors >= maxConsecutiveErrors {
+					log.Printf("Too many consecutive decryption errors, disconnecting")
+					done <- true
+					return
+				}
 				continue
 			}
+
+			// Success! Reset error counter
+			consecutiveErrors = 0
 
 			// Check if this is a control message
 			if len(packet) > 5 && string(packet[:5]) == "CTRL:" {

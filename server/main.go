@@ -1122,6 +1122,44 @@ func componentToDomain(component string) protocol.Domain {
 	}
 }
 
+// componentToUpdateCommand converts a component name to the UPDATE_* command format
+// that VPN clients listen for on the control channel
+func componentToUpdateCommand(component string) string {
+	switch strings.ToLower(component) {
+	case "vpn", "core", "client":
+		return "UPDATE_VPN"
+	case "menu", "menubar":
+		return "UPDATE_MENU"
+	case "video":
+		return "UPDATE_VIDEO"
+	case "ssh":
+		return "UPDATE_SSH"
+	case "all":
+		return "UPDATE_ALL"
+	default:
+		// For extensions, use UPDATE_<EXTENSIONNAME> format
+		return "UPDATE_" + strings.ToUpper(component)
+	}
+}
+
+// domainToUpdateCommand converts a protocol domain to the UPDATE_* command format
+func domainToUpdateCommand(domain protocol.Domain) string {
+	switch domain {
+	case protocol.DomainCore:
+		return "UPDATE_VPN"
+	case protocol.DomainServer:
+		return "UPDATE_VPN" // Server updates also affect VPN clients
+	case protocol.DomainMenubar:
+		return "UPDATE_MENU"
+	case protocol.DomainExtension:
+		return "UPDATE_ALL" // Extension updates use UPDATE_ALL to let menu-bar handle specifics
+	case protocol.DomainDesktop, protocol.DomainUI:
+		return "UPDATE_ALL" // Desktop updates trigger full update
+	default:
+		return "UPDATE_ALL"
+	}
+}
+
 // updateInitHandler triggers server and client updates using Layer 0 protocol
 func updateInitHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
@@ -1166,10 +1204,16 @@ func updateInitHandler(w http.ResponseWriter, r *http.Request) {
 		msg.WithTarget(target)
 	}
 
-	// Broadcast using Layer 0 protocol
+	// Broadcast using Layer 0 protocol (for WebSocket clients like desktop app)
 	if globalServer != nil {
 		log.Printf("[UPDATE] Broadcasting Layer 0 message: domain=%s action=%s", domain, action)
 		globalServer.broadcastUpdateMessage(msg)
+
+		// ALSO broadcast UPDATE_* command to VPN clients via control channel
+		// This is what the VPN clients listen for to trigger updates via menu-bar
+		updateCommand := componentToUpdateCommand(component)
+		log.Printf("[UPDATE] Broadcasting control channel message: %s", updateCommand)
+		globalServer.broadcastControlMessage(updateCommand)
 	}
 
 	// Respond to the request before updating (so deploy script gets response)
@@ -1545,6 +1589,11 @@ func (s *VPNServer) broadcastUpdate(oldCommit, newCommit string) {
 		log.Printf("[CD]   - %s", f)
 	}
 
-	// Broadcast using the new protocol
+	// Broadcast using the new protocol (for WebSocket clients)
 	s.broadcastUpdateMessage(msg)
+
+	// ALSO broadcast UPDATE_* command to VPN clients via control channel
+	updateCommand := domainToUpdateCommand(domain)
+	log.Printf("[CD] Broadcasting control channel message: %s", updateCommand)
+	s.broadcastControlMessage(updateCommand)
 }

@@ -142,6 +142,28 @@ func formatTimestamp(ms int64) string {
 	return time.UnixMilli(ms).Format("15:04:05.000")
 }
 
+// formatDuration formats a duration in a human-readable way
+func formatDuration(d time.Duration) string {
+	days := d / (24 * time.Hour)
+	d -= days * 24 * time.Hour
+	hours := d / time.Hour
+	d -= hours * time.Hour
+	minutes := d / time.Minute
+	d -= minutes * time.Minute
+	seconds := d / time.Second
+
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm", days, hours, minutes)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm %ds", hours, minutes, seconds)
+	}
+	if minutes > 0 {
+		return fmt.Sprintf("%dm %ds", minutes, seconds)
+	}
+	return fmt.Sprintf("%ds", seconds)
+}
+
 func printEvent(msg map[string]interface{}) {
 	ns, _ := msg["ns"].(string)
 	ts, _ := msg["ts"].(float64)
@@ -648,7 +670,14 @@ func cmdPeers() {
 			fmt.Printf("    Public IP: %s\n", publicIP)
 		}
 		if connectedAt != "" {
-			fmt.Printf("    Connected: %s\n", connectedAt)
+			// Parse connected_at and calculate uptime
+			if t, err := time.Parse(time.RFC3339, connectedAt); err == nil {
+				uptime := time.Since(t).Round(time.Second)
+				fmt.Printf("    Uptime: %s\n", formatDuration(uptime))
+				fmt.Printf("    Connected: %s\n", connectedAt)
+			} else {
+				fmt.Printf("    Connected: %s\n", connectedAt)
+			}
 		}
 		fmt.Println()
 	}
