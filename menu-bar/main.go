@@ -632,7 +632,8 @@ func connectVPN() {
 				}
 			}
 
-			dialog.Message("VPN Connected!\n\nServer: %s\nIP: %s", vpnState.Server, vpnState.IP).Title("Family VPN").Info()
+			// Removed dialog popup to prevent spam - status shown in menu bar
+			log.Printf("VPN Connected - Server: %s, IP: %s", vpnState.Server, vpnState.IP)
 		}
 	}()
 
@@ -649,7 +650,7 @@ func connectVPN() {
 			// Process died unexpectedly
 			log.Printf("VPN client exited unexpectedly: %v", err)
 			handleConnectionFailure()
-			dialog.Message("VPN connection lost").Title("Family VPN").Error()
+			// Removed dialog popup to prevent spam - status shown in menu bar
 		}
 	}()
 }
@@ -809,7 +810,7 @@ func disconnectVPN() {
 	updateMenuBarIcon()
 
 	log.Println("VPN disconnected and network restored successfully")
-	dialog.Message("VPN Disconnected").Title("Family VPN").Info()
+	// Removed dialog popup to prevent spam - status shown in menu bar
 }
 
 func monitorVPNOutput(stdout, stderr io.ReadCloser) {
